@@ -1,11 +1,6 @@
 package install
 
-import (
-	"io"
-	"os"
-
-	"golang.org/x/term"
-)
+import "os"
 
 // terminalIO is an interactive stdin/stdout pair, usually /dev/tty.
 type terminalIO struct {
@@ -27,14 +22,3 @@ func openTerminalIO() (terminalIO, error) {
 	return terminalIO{in: tty, out: tty}, nil
 }
 
-func isTerminalFile(f *os.File) bool {
-	return term.IsTerminal(int(f.Fd()))
-}
-
-func isInteractiveReader(r io.Reader) bool {
-	f, ok := r.(*os.File)
-	if !ok {
-		return false
-	}
-	return isTerminalFile(f)
-}
