@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 func withHome(t *testing.T, home string) {
@@ -43,6 +43,9 @@ func TestDefault(t *testing.T) {
 	}
 	if cfg.Upstream != "" {
 		t.Errorf("Upstream = %q, want empty", cfg.Upstream)
+	}
+	if cfg.Mappings.SessionHeader != "X-Cover-Session" {
+		t.Errorf("Mappings.SessionHeader = %q, want X-Cover-Session", cfg.Mappings.SessionHeader)
 	}
 
 	if cfg.UpstreamTimeouts.ConnectTimeoutMS != 10000 {

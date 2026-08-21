@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"llmguard/internal/redact"
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 func newTestRedactor(t *testing.T) *redact.Redactor {

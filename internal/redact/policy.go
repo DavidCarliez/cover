@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 var (

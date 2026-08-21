@@ -1,7 +1,7 @@
-# Codex / OMP -> llm-guard -> Codex Router -> provider selected by the router
+# Codex / OMP -> Cover -> Codex Router -> provider selected by the router
 listen: "127.0.0.1:8317"
 upstream: "http://127.0.0.1:8080"
-log_file: "~/.local/share/llmguard/redactions.log"
+log_file: "~/.local/share/cover/redactions.log"
 
 upstream_timeouts:
   connect_timeout_ms: 10000
@@ -12,7 +12,7 @@ cache:
   max_entries: 10000
 
 mappings:
-  session_header: "X-LLMGuard-Session"
+  session_header: "X-Cover-Session"
   max_sessions: 128
   max_entries_per_session: 10000
   session_ttl_minutes: 60

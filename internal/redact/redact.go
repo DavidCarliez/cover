@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 var placeholderRe = regexp.MustCompile(placeholderOpen + `([0-9a-f]{8})` + placeholderClose)
@@ -77,7 +77,7 @@ func (r *Redactor) Redact(body []byte) ([]byte, []string) {
 	return r.redactBody(body, false)
 }
 
-// RedactForProxy is like Redact but injects the llm-guard system note when
+// RedactForProxy is like Redact but injects the Cover system note when
 // redactions occurred.
 func (r *Redactor) RedactForProxy(body []byte) ([]byte, []string) {
 	return r.redactBody(body, true)

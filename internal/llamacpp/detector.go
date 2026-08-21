@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 // Category is the detectors.Match category used for spans flagged by the

@@ -1,23 +1,44 @@
-# llm-guard
+# Cover
 
-[![CI](https://github.com/DavidCarliez/llm-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/DavidCarliez/llm-guard/actions/workflows/ci.yml)
+[![CI](https://github.com/DavidCarliez/cover/actions/workflows/ci.yml/badge.svg)](https://github.com/DavidCarliez/cover/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
-A local proxy that sits between your AI agents and remote LLM APIs (OpenAI,
-Anthropic, or any other HTTP API). It scans outgoing requests for secrets,
-API keys, and other sensitive data, replaces them with reversible realistic
-pseudonyms, placeholders, masks, or redaction markers according to local policy
-before they leave your machine, and restores the original values in the
-response so your agent keeps working normally.
+**Cover sensitive data before it reaches an AI provider.**
+
+Cover is a local privacy proxy for Codex, Claude Code, Cursor, OpenAI-compatible
+clients, and other HTTP-based agents. It finds secrets and personal data in
+outgoing JSON, replaces them with safe stand-ins, and restores the originals in
+the response so the agent continues to work normally.
+
+## Features
+
+- Built-in detection for major API keys, tokens, private keys, JWTs, passwords,
+  emails, phone numbers, SSNs, credit cards, and IBANs.
+- Declarative rules with `allow`, `placeholder`, `pseudonymize`, `mask`,
+  `redact`, and `block` actions.
+- Realistic replacement generators for emails, usernames, passwords, IP
+  addresses, hosts, domains, UUIDs, URLs, aliases, and other structured values.
+- Bounded, session-isolated, in-memory mappings that keep replacements stable
+  and restore originals without writing the mapping to disk.
+- Transparent restoration for JSON responses and streaming SSE responses.
+- Fail-closed handling for malformed JSON, compressed bodies, invalid policy,
+  mapping exhaustion, detector failure, and explicit block rules.
+- `cover inspect` for previewing the exact protected JSON without sending it.
+- Safe metadata-only audit logs with no raw prompt or response bodies.
+- Configurable image policy (`allow`, `warn`, or `block`).
+- Optional local llama.cpp detector for sensitive free-form text that regular
+  expressions cannot recognize.
+- Ready-to-copy Codex and Codex Router configuration, including the required
+  compression and WebSocket settings.
 
 ## How it works
 
 ```
-Agent --> llm-guard (redacts secrets) --> real LLM provider
-Agent <-- llm-guard (restores secrets) <-- real LLM provider
+Agent --> Cover (redacts secrets) --> real LLM provider
+Agent <-- Cover (restores secrets) <-- real LLM provider
 ```
 
-llm-guard is a transparent reverse proxy: it forwards whatever method, path,
+Cover is a transparent reverse proxy: it forwards whatever method, path,
 query string, and headers your agent sends, but rewrites the JSON request
 body before it leaves your machine, and rewrites the response body before it
 reaches your agent.
@@ -40,7 +61,7 @@ reaches your agent.
 Malformed JSON, detector/generator failures, mapping exhaustion, and blocked
 rules are rejected locally. The original request is never used as a fallback.
 
-Redaction mappings live in memory only for the life of the `llmguard`
+Redaction mappings live in memory only for the life of the `cover`
 process and are never written to disk. Logs record which categories were
 redacted and how many, never the values themselves.
 
@@ -52,19 +73,19 @@ Add your own patterns (e.g. internal project codenames, customer IDs) via
 ### One command (recommended)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/DavidCarliez/llm-guard/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/DavidCarliez/cover/main/scripts/install.sh | bash
 ```
 
 For non-interactive installs (CI, scripts), set agents explicitly:
 
 ```sh
-LLM_GUARD_AGENTS=claude curl -fsSL .../install.sh | bash
+COVER_AGENTS=claude curl -fsSL https://raw.githubusercontent.com/DavidCarliez/cover/main/scripts/install.sh | bash
 ```
 
 This will:
 
-1. Clone the repo and build the `llmguard` binary (requires [Go](https://go.dev/dl/))
-2. Install it to `~/.local/bin/llmguard`
+1. Clone the repo and build the `cover` binary (requires [Go](https://go.dev/dl/))
+2. Install it to `~/.local/bin/cover`
 3. Ask which agents you use (OpenAI/Codex, Claude Code, Cursor)
 4. Write config, add `BASE_URL` exports to your shell profile, and start the proxy in the background
 5. Print a ready summary with the env vars to use
@@ -84,23 +105,23 @@ running `claude` session and start a new one after installing.
 Requires Go (see `go.mod` for the version used to build).
 
 ```sh
-git clone https://github.com/DavidCarliez/llm-guard.git && cd llm-guard
-go build -o llmguard ./cmd/llmguard
+git clone https://github.com/DavidCarliez/cover.git && cd cover
+go build -o cover ./cmd/cover
 ```
 
-This produces a single self-contained `llmguard` binary with no runtime
+This produces a single self-contained `cover` binary with no runtime
 dependencies (no cgo, no C toolchain needed). Put it somewhere on your
 `PATH`, e.g.:
 
 ```sh
-sudo mv llmguard /usr/local/bin/
+sudo mv cover /usr/local/bin/
 ```
 
 It cross-compiles to any platform/architecture Go supports — e.g. to build
 for Linux arm64 from macOS:
 
 ```sh
-GOOS=linux GOARCH=arm64 go build -o llmguard-linux-arm64 ./cmd/llmguard
+GOOS=linux GOARCH=arm64 go build -o cover-linux-arm64 ./cmd/cover
 ```
 
 ## Quick start
@@ -108,27 +129,27 @@ GOOS=linux GOARCH=arm64 go build -o llmguard-linux-arm64 ./cmd/llmguard
 ### 1. Configure
 
 ```sh
-llmguard init
+cover init
 ```
 
 This prompts you for which LLM API to proxy to (OpenAI, Anthropic, or a
-custom URL), then writes `~/.config/llmguard/config.yaml` (see
+custom URL), then writes `~/.config/cover/config.yaml` (see
 `configs/config.example.yaml` for the full set of options).
 
 ### 2. Start the proxy
 
 ```sh
-llmguard start            # foreground
-llmguard start --detach   # background; logs to ~/.local/share/llmguard/daemon.log
-llmguard restart          # stop (if running) and start in background
-llmguard status
-llmguard stop
+cover start            # foreground
+cover start --detach   # background; logs to ~/.local/share/cover/daemon.log
+cover restart          # stop (if running) and start in background
+cover status
+cover stop
 ```
 
 ### 3. Sanity check (optional)
 
 ```sh
-llmguard test
+cover test
 ```
 
 Runs a built-in sample payload containing fake secrets through the redactor
@@ -161,7 +182,7 @@ rules:
 Preview exactly what would be sent upstream without making a network request:
 
 ```sh
-llmguard inspect request.json
+cover inspect request.json
 ```
 
 The JSON report contains the transformed request, categories, matched rule
@@ -171,13 +192,13 @@ mapping or a separate list of original sensitive values.
 For a live sanity check, keep one terminal on the safe metadata-only log:
 
 ```sh
-tail -f ~/.local/share/llmguard/redactions.log
+tail -f ~/.local/share/cover/redactions.log
 ```
 
 Then ask Codex to echo a synthetic detector value such as
 `contact=alice@example.com`. A successful round trip logs
 `transformed=1 categories=email`; the provider receives a replacement while
-Codex displays the restored synthetic email. Use `llmguard inspect` when you
+Codex displays the restored synthetic email. Use `cover inspect` when you
 need to view the complete transformed JSON locally without forwarding it.
 
 ## Hook it up to your agent
@@ -185,7 +206,7 @@ need to view the complete transformed JSON locally without forwarding it.
 Once the proxy is running on `127.0.0.1:8317` (the default — change via
 `listen` in the config), point your agent's API base URL at it instead of
 the real provider. Your existing API key env vars (`OPENAI_API_KEY`,
-`ANTHROPIC_API_KEY`, etc.) keep working as-is — llm-guard only rewrites the
+`ANTHROPIC_API_KEY`, etc.) keep working as-is — Cover only rewrites the
 request/response *bodies* and passes headers straight through, so
 authentication with the real provider is unaffected.
 
@@ -196,19 +217,19 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8317
 ```
 
 Run `claude` as normal in the same shell/session. Every request from Claude
-Code now flows through llm-guard before reaching `api.anthropic.com`.
+Code now flows through Cover before reaching `api.anthropic.com`.
 
 ### Codex CLI / other OpenAI-API agents
 
 Current Codex uses the Responses API and enables zstd request compression and
 WebSockets by default. Define a user-level provider in `~/.codex/config.toml`
-that uses ordinary, uncompressed HTTP through llm-guard:
+that uses ordinary, uncompressed HTTP through Cover:
 
 ```toml
-model_provider = "llmguard"
+model_provider = "cover"
 
-[model_providers.llmguard]
-name = "llm-guard"
+[model_providers.cover]
+name = "Cover"
 base_url = "http://127.0.0.1:8317"
 wire_api = "responses"
 requires_openai_auth = true
@@ -223,7 +244,7 @@ key there instead of creating a duplicate table. If the router uses an
 environment API key rather than Codex/OpenAI login, use
 `env_key = "YOUR_ROUTER_KEY_ENV_NAME"` instead of `requires_openai_auth`.
 
-Keep llm-guard's `upstream` set to the router's real base URL, including its
+Keep Cover's `upstream` set to the router's real base URL, including its
 `/v1` suffix when present. The Codex-facing `base_url` above should not add
 `/v1`; Codex appends the Responses path itself.
 
@@ -241,7 +262,7 @@ its `upstream` to your router:
 Codex / OMP
       |
       v
-llm-guard privacy proxy
+Cover privacy proxy
       |
       v
 Codex Router
@@ -251,7 +272,7 @@ OpenAI / Anthropic / Gemini / local models / others
 ```
 
 The proxy recursively scans generic JSON and does not depend on which provider
-the router chooses. Send a stable `X-LLMGuard-Session` header when reversible
+the router chooses. Send a stable `X-Cover-Session` header when reversible
 mappings must work across turns. A request without it receives an isolated
 mapping that is destroyed after its response completes.
 
@@ -274,28 +295,28 @@ const client = new Anthropic({ baseURL: "http://127.0.0.1:8317", apiKey: process
 
 If your tool lets you set a custom "API base URL" / "endpoint" setting
 (custom integrations, IDE plugins, internal scripts), point it at
-`http://127.0.0.1:8317` (or `/v1` if it's an OpenAI-shaped client) — llm-guard
+`http://127.0.0.1:8317` (or `/v1` if it's an OpenAI-shaped client) — Cover
 forwards everything else (path, query string, headers, streaming) unchanged.
 
 To confirm traffic is actually flowing through the proxy, tail the redaction
 log while your agent runs:
 
 ```sh
-tail -f ~/.local/share/llmguard/redactions.log
+tail -f ~/.local/share/cover/redactions.log
 ```
 
 ## Optional: local LLM fallback detector
 
 Regex catches structured secrets (keys, tokens, emails, SSNs, credit
 cards, phone numbers, IBANs) but misses free-form sensitive content —
-names, internal project codenames, customer IDs, addresses. llm-guard can
+names, internal project codenames, customer IDs, addresses. Cover can
 optionally run a small local LLM
 (`Qwen2.5-0.5B-Instruct`, ~0.5B params, ~490MB as a Q4 GGUF) as an additional
 detection pass over each string field.
 
 This is implemented by spawning [`llama-server`](https://github.com/ggml-org/llama.cpp)
 — llama.cpp's prebuilt HTTP server binary — as a local subprocess and talking
-to it over `127.0.0.1`. The core `llmguard` binary itself has no C
+to it over `127.0.0.1`. The core `cover` binary itself has no C
 dependencies and cross-compiles to any platform Go supports; the LLM fallback
 is available wherever ggml-org/llama.cpp publishes a prebuilt CPU binary
 (macOS arm64/x64, Linux x64/arm64/s390x, Windows x64/arm64). On any other
@@ -306,13 +327,13 @@ the affected request to fail closed rather than silently weakening the policy.
 ### Set it up
 
 ```sh
-llmguard models pull     # downloads llama-server + the GGUF model (~490MB)
-llmguard models status    # check what's installed and whether enabled
+cover models pull     # downloads llama-server + the GGUF model (~490MB)
+cover models status    # check what's installed and whether enabled
 ```
 
 `models pull` updates `server_path`/`model_path` in your config and asks
-whether to set `detectors.llm_fallback.enabled: true`. Restart llm-guard
-afterwards (`llmguard restart`).
+whether to set `detectors.llm_fallback.enabled: true`. Restart Cover
+afterwards (`cover restart`).
 
 ### What it costs
 
@@ -381,4 +402,4 @@ issue.
 
 ## License
 
-llm-guard is licensed under the [Apache License 2.0](LICENSE).
+Cover is licensed under the [Apache License 2.0](LICENSE).

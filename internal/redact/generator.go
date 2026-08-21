@@ -45,7 +45,7 @@ func ValidateAction(action, generator string) error {
 }
 
 func digest(generator, original string, attempt int) [32]byte {
-	return sha256.Sum256([]byte(fmt.Sprintf("llmguard:%s:%d:%s", generator, attempt, original)))
+	return sha256.Sum256([]byte(fmt.Sprintf("cover:%s:%d:%s", generator, attempt, original)))
 }
 
 func generateReplacement(generator, original string, attempt int) (string, error) {

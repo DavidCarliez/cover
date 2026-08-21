@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 func TestRestoreResponse_JSONEscapesQuotes(t *testing.T) {

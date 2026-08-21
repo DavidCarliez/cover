@@ -1,5 +1,5 @@
-// Package config handles loading, saving, and defaulting llm-guard's
-// configuration file (~/.config/llmguard/config.yaml).
+// Package config handles loading, saving, and defaulting Cover's
+// configuration file (~/.config/cover/config.yaml).
 package config
 
 import (
@@ -10,8 +10,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"llmguard/internal/redact"
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 // Config is the top-level configuration loaded from config.yaml.
@@ -67,18 +67,18 @@ type RegexConfig struct {
 }
 
 // LLMFallbackConfig configures the optional local-LLM semantic detector. When
-// enabled, llm-guard spawns a local `llama-server` subprocess (downloaded via
-// `llmguard models pull`) and uses it as an additional detector for sensitive
+// enabled, Cover spawns a local `llama-server` subprocess (downloaded via
+// `cover models pull`) and uses it as an additional detector for sensitive
 // content that regex patterns miss. Startup and request-time detector failures
 // are fatal/fail-closed while this detector is enabled.
 type LLMFallbackConfig struct {
 	Enabled bool `yaml:"enabled"`
 
 	// ServerPath is the path to the llama-server binary, set by
-	// `llmguard models pull`.
+	// `cover models pull`.
 	ServerPath string `yaml:"server_path"`
 	// ModelPath is the path to the GGUF model file, set by
-	// `llmguard models pull`.
+	// `cover models pull`.
 	ModelPath string `yaml:"model_path"`
 	// Port is the local port llama-server listens on.
 	Port int `yaml:"port"`
@@ -115,14 +115,14 @@ type LLMFallbackConfig struct {
 }
 
 const (
-	dirName       = "llmguard"
+	dirName       = "cover"
 	fileName      = "config.yaml"
 	logName       = "redactions.log"
 	defaultListen = "127.0.0.1:8317"
 )
 
 // Default returns a Config populated with sensible defaults. Upstream is
-// left blank and must be set by the user (via `llmguard init` or by editing
+// left blank and must be set by the user (via `cover init` or by editing
 // the config file).
 func Default() *Config {
 	return &Config{
@@ -139,7 +139,7 @@ func Default() *Config {
 		},
 		Rules: map[string]detectors.CustomPattern{},
 		Mappings: MappingsConfig{
-			SessionHeader:        "X-LLMGuard-Session",
+			SessionHeader:        "X-Cover-Session",
 			MaxSessions:          128,
 			MaxEntriesPerSession: 10000,
 			SessionTTLMinutes:    60,
@@ -167,7 +167,7 @@ func Default() *Config {
 	}
 }
 
-// Path returns the default config file path: ~/.config/llmguard/config.yaml.
+// Path returns the default config file path: ~/.config/cover/config.yaml.
 func Path() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -176,9 +176,9 @@ func Path() (string, error) {
 	return filepath.Join(home, ".config", dirName, fileName), nil
 }
 
-// StateDir returns the directory used for llm-guard's persistent local
+// StateDir returns the directory used for Cover's persistent local
 // state (logs, downloaded llama-server binaries, GGUF models):
-// ~/.local/share/llmguard.
+// ~/.local/share/cover.
 func StateDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

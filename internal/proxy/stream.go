@@ -4,7 +4,7 @@ import (
 	"io"
 	"net/http"
 
-	"llmguard/internal/redact"
+	"github.com/DavidCarliez/cover/internal/redact"
 )
 
 // RestoringWriter wraps an io.Writer (typically an http.ResponseWriter),

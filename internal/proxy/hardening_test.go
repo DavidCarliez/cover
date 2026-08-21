@@ -11,8 +11,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"llmguard/internal/redact"
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 func policyProxyRedactor(t *testing.T, rules ...detectors.CustomPattern) *redact.Redactor {
@@ -85,12 +85,12 @@ func TestProxyPseudonymizesAndRestoresToolArguments(t *testing.T) {
 	}))
 	defer upstream.Close()
 	r := policyProxyRedactor(t, detectors.CustomPattern{Name: "ipv4", Detector: "builtin_ipv4", Action: "pseudonymize", Generator: "ipv4"})
-	p, _ := New(upstream.URL, r, nil, Options{SessionHeader: "X-LLMGuard-Session"})
+	p, _ := New(upstream.URL, r, nil, Options{SessionHeader: "X-Cover-Session"})
 	front := httptest.NewServer(p)
 	defer front.Close()
 	payload := `{"input":[{"type":"function_call","name":"run_command","arguments":"{\"target\":\"10.20.30.40\",\"password\":\"safe\"}"}]}`
 	req, _ := http.NewRequest(http.MethodPost, front.URL+"/v1/responses", strings.NewReader(payload))
-	req.Header.Set("X-LLMGuard-Session", "codex-turns")
+	req.Header.Set("X-Cover-Session", "codex-turns")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)

@@ -3,7 +3,7 @@ package redact
 import (
 	"regexp"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 // testDataDisclaimerRe matches phrasing that explicitly marks content as
@@ -20,12 +20,12 @@ var testDataDisclaimerRe = regexp.MustCompile(`(?i)\b(` +
 // alwaysRedactCategories are redacted even when the surrounding text is
 // explicitly labeled as test or example data.
 var alwaysRedactCategories = map[string]bool{
-	"ssn":          true,
-	"credit_card":  true,
-	"phone_us":     true,
-	"phone_intl":   true,
-	"iban":         true,
-	"email":        true,
+	"ssn":         true,
+	"credit_card": true,
+	"phone_us":    true,
+	"phone_intl":  true,
+	"iban":        true,
+	"email":       true,
 }
 
 func isTestDataContext(text string) bool {

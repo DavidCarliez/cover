@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"llmguard/internal/redact"
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 func TestRestoringWriter_SplitAcrossWrites(t *testing.T) {

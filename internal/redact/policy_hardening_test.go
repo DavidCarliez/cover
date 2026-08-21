@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 func policyRedactor(t *testing.T, rules ...detectors.CustomPattern) *Redactor {

@@ -1,4 +1,4 @@
-// Package install implements the interactive `llmguard install` flow.
+// Package install implements the interactive `cover install` flow.
 package install
 
 import (
@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"llmguard/internal/config"
+	"github.com/DavidCarliez/cover/internal/config"
 )
 
 // Agent identifies a supported AI client.
@@ -299,8 +299,8 @@ func printAgentNotes(w io.Writer, agents []Agent, listen string) {
 }
 
 const (
-	profileBegin = "# >>> llm-guard begin >>>"
-	profileEnd   = "# <<< llm-guard end <<<"
+	profileBegin = "# >>> Cover begin >>>"
+	profileEnd   = "# <<< Cover end <<<"
 )
 
 func writeShellProfile(listen string, agents []Agent) error {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 func TestDetectionCache_HitReturnsSameResult(t *testing.T) {
@@ -48,7 +48,7 @@ func TestRedactForProxy_InjectsGuardNote(t *testing.T) {
 	if len(categories) == 0 {
 		t.Fatal("expected categories")
 	}
-	if !strings.Contains(string(redacted), "[llm-guard]") {
+	if !strings.Contains(string(redacted), "[Cover]") {
 		t.Fatalf("expected guard note in body: %s", redacted)
 	}
 }

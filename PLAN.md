@@ -2,12 +2,12 @@
 
 ## Current architecture
 
-`llmguard` is a transparent Go HTTP reverse proxy. `internal/proxy` reads a
+`cover` is a transparent Go HTTP reverse proxy. `internal/proxy` reads a
 request body, delegates recursive JSON string rewriting to `internal/redact`,
 forwards the rewritten bytes, and restores mapped values in ordinary or SSE
 responses. `internal/redact/detectors` supplies built-in and custom regular
 expressions. A process-wide in-memory store maps short placeholder hashes back
-to originals. `internal/config` loads YAML and `cmd/llmguard` assembles the
+to originals. `internal/config` loads YAML and `cmd/cover` assembles the
 components and exposes lifecycle commands.
 
 ## Security-sensitive paths
@@ -45,7 +45,7 @@ components and exposes lifecycle commands.
    and SSE responses, including tokens split across writes.
 7. Add allow/block/warn media policy for inline image data and image URLs. Image
    pixels remain uninspected.
-8. Add `llmguard inspect request.json`, safe structured logging, a Codex Router
+8. Add `cover inspect request.json`, safe structured logging, a Codex Router
    example, and explicit limitations.
 9. Add protocol-shaped, concurrency, collision, cleanup, streaming, media, and
    fail-closed tests, then run the complete test and vet suites.

@@ -3,7 +3,7 @@ package redact
 import (
 	"testing"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 func benchRedactor(b *testing.B) *Redactor {

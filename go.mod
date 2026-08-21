@@ -1,4 +1,4 @@
-module llmguard
+module github.com/DavidCarliez/cover
 
 go 1.26.4
 

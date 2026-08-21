@@ -43,7 +43,7 @@ func StopOrFind(pidPath, listenAddr string) error {
 	}
 	pid, err := FindListenerPID(listenAddr)
 	if err != nil {
-		return fmt.Errorf("llm-guard is not running (no pidfile)")
+		return fmt.Errorf("Cover is not running (no pidfile)")
 	}
 	return stopPID(pidPath, pid)
 }
@@ -73,5 +73,5 @@ func StopOrFindAndWait(pidPath, listenAddr string, timeout time.Duration) error 
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return fmt.Errorf("timed out waiting for llm-guard (pid %d) to stop", pid)
+	return fmt.Errorf("timed out waiting for Cover (pid %d) to stop", pid)
 }

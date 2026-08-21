@@ -5,7 +5,7 @@ import (
 	"io"
 	"net/http"
 
-	"llmguard/internal/redact"
+	"github.com/DavidCarliez/cover/internal/redact"
 )
 
 // SSERestoringWriter buffers complete SSE events and restores placeholder

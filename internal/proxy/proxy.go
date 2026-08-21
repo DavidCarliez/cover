@@ -17,7 +17,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"llmguard/internal/redact"
+	"github.com/DavidCarliez/cover/internal/redact"
 )
 
 const (
