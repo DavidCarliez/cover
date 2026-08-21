@@ -2,11 +2,16 @@ package proxy
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 
 	"github.com/DavidCarliez/cover/internal/redact"
 )
+
+const defaultSSEEventLimit = int64(4 << 20)
+
+var ErrSSEEventTooLarge = errors.New("SSE event exceeds configured limit")
 
 // SSERestoringWriter buffers complete SSE events and restores placeholder
 // tokens inside JSON data lines with proper escaping.
@@ -16,6 +21,7 @@ type SSERestoringWriter struct {
 	redactor *redact.Redactor
 	session  string
 	buf      []byte
+	maxEvent int64
 }
 
 // NewSSERestoringWriter wraps w for text/event-stream responses.
@@ -24,8 +30,15 @@ func NewSSERestoringWriter(w io.Writer, redactor *redact.Redactor) *SSERestoring
 }
 
 func NewSSERestoringWriterForSession(w io.Writer, redactor *redact.Redactor, session string) *SSERestoringWriter {
+	return NewSSERestoringWriterForSessionWithLimit(w, redactor, session, defaultSSEEventLimit)
+}
+
+func NewSSERestoringWriterForSessionWithLimit(w io.Writer, redactor *redact.Redactor, session string, maxEvent int64) *SSERestoringWriter {
 	f, _ := w.(http.Flusher)
-	return &SSERestoringWriter{w: w, flusher: f, redactor: redactor, session: session}
+	if maxEvent <= 0 {
+		maxEvent = defaultSSEEventLimit
+	}
+	return &SSERestoringWriter{w: w, flusher: f, redactor: redactor, session: session, maxEvent: maxEvent}
 }
 
 // Write implements io.Writer.
@@ -34,7 +47,15 @@ func (rw *SSERestoringWriter) Write(p []byte) (int, error) {
 	for {
 		idx := bytes.Index(rw.buf, []byte("\n\n"))
 		if idx < 0 {
+			if int64(len(rw.buf)) > rw.maxEvent {
+				rw.buf = nil
+				return 0, ErrSSEEventTooLarge
+			}
 			break
+		}
+		if int64(idx+2) > rw.maxEvent {
+			rw.buf = nil
+			return 0, ErrSSEEventTooLarge
 		}
 		event := rw.buf[:idx+2]
 		rw.buf = rw.buf[idx+2:]
@@ -51,6 +72,10 @@ func (rw *SSERestoringWriter) Write(p []byte) (int, error) {
 
 // Close flushes any buffered partial event.
 func (rw *SSERestoringWriter) Close() error {
+	if int64(len(rw.buf)) > rw.maxEvent {
+		rw.buf = nil
+		return ErrSSEEventTooLarge
+	}
 	if len(rw.buf) > 0 {
 		restored := rw.redactor.RestoreSSEEventForSession(rw.buf, rw.session)
 		if _, err := rw.w.Write(restored); err != nil {

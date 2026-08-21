@@ -47,6 +47,12 @@ func TestDefault(t *testing.T) {
 	if cfg.Mappings.SessionHeader != "X-Cover-Session" {
 		t.Errorf("Mappings.SessionHeader = %q, want X-Cover-Session", cfg.Mappings.SessionHeader)
 	}
+	if cfg.Network.AllowRemote {
+		t.Error("Network.AllowRemote = true, want false")
+	}
+	if cfg.Limits.RequestBytes != 16<<20 || cfg.Limits.ResponseBytes != 32<<20 || cfg.Limits.SSEEventBytes != 4<<20 {
+		t.Fatalf("unexpected default limits: %+v", cfg.Limits)
+	}
 
 	if cfg.UpstreamTimeouts.ConnectTimeoutMS != 10000 {
 		t.Errorf("UpstreamTimeouts.ConnectTimeoutMS = %d, want 10000", cfg.UpstreamTimeouts.ConnectTimeoutMS)
@@ -98,6 +104,42 @@ func TestDefault(t *testing.T) {
 	}
 	if llm.LlamacppRelease != "latest" {
 		t.Errorf("LLMFallback.LlamacppRelease = %q, want latest", llm.LlamacppRelease)
+	}
+}
+
+func TestListenValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		listen      string
+		allowRemote bool
+		wantErr     bool
+	}{
+		{"ipv4 loopback", "127.0.0.1:8317", false, false},
+		{"ipv6 loopback", "[::1]:8317", false, false},
+		{"localhost", "localhost:8317", false, false},
+		{"all interfaces", "0.0.0.0:8317", false, true},
+		{"empty host", ":8317", false, true},
+		{"remote explicit", "0.0.0.0:8317", true, false},
+		{"bad port", "127.0.0.1:70000", false, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Default()
+			cfg.Listen = tc.listen
+			cfg.Network.AllowRemote = tc.allowRemote
+			err := cfg.Validate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("Validate() error=%v, wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestLimitValidation(t *testing.T) {
+	cfg := Default()
+	cfg.Limits.RequestBytes = 0
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected zero request limit to fail validation")
 	}
 }
 

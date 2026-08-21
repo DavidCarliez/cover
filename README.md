@@ -69,7 +69,9 @@ rules are rejected locally. The original request is never used as a fallback.
 
 Redaction mappings live in memory only for the life of the `cover`
 process and are never written to disk. Logs record which categories were
-redacted and how many, never the values themselves.
+redacted and how many, never the values themselves. Request paths, query
+strings, and sensitive upstream URL components are also omitted from logs and
+status output.
 
 Add your own patterns (e.g. internal project codenames, customer IDs) via
 `detectors.regex.custom_patterns` in the config file.
@@ -151,6 +153,24 @@ cover restart          # stop (if running) and start in background
 cover status
 cover stop
 ```
+
+Cover accepts loopback listeners by default. Remote or all-interface listeners
+are rejected unless you explicitly set `network.allow_remote: true`; if you do,
+protect the listener separately with firewall rules and authentication. Memory
+use is bounded with configurable request, response, and SSE-event limits:
+
+```yaml
+network:
+  allow_remote: false
+limits:
+  request_bytes: 16777216
+  response_bytes: 33554432
+  sse_event_bytes: 4194304
+```
+
+Oversized requests are rejected locally with HTTP 413. Oversized buffered
+responses return HTTP 502, while a stream is terminated if its total response
+or individual SSE event exceeds the configured cap.
 
 ### 3. Sanity check (optional)
 

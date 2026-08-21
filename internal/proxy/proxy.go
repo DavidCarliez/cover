@@ -5,6 +5,7 @@ package proxy
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -23,7 +24,12 @@ import (
 const (
 	defaultConnectTimeout        = 10 * time.Second
 	defaultResponseHeaderTimeout = 120 * time.Second
+	defaultMaxRequestBytes       = int64(16 << 20)
+	defaultMaxResponseBytes      = int64(32 << 20)
+	defaultMaxSSEEventBytes      = int64(4 << 20)
 )
+
+var errBodyTooLarge = errors.New("body exceeds configured limit")
 
 // Options configures upstream HTTP client timeouts. Zero values use defaults.
 type Options struct {
@@ -31,6 +37,9 @@ type Options struct {
 	ResponseHeaderTimeout time.Duration
 	SessionHeader         string
 	MediaImages           string
+	MaxRequestBytes       int64
+	MaxResponseBytes      int64
+	MaxSSEEventBytes      int64
 }
 
 func (o Options) withDefaults() Options {
@@ -39,6 +48,15 @@ func (o Options) withDefaults() Options {
 	}
 	if o.ResponseHeaderTimeout <= 0 {
 		o.ResponseHeaderTimeout = defaultResponseHeaderTimeout
+	}
+	if o.MaxRequestBytes <= 0 {
+		o.MaxRequestBytes = defaultMaxRequestBytes
+	}
+	if o.MaxResponseBytes <= 0 {
+		o.MaxResponseBytes = defaultMaxResponseBytes
+	}
+	if o.MaxSSEEventBytes <= 0 {
+		o.MaxSSEEventBytes = defaultMaxSSEEventBytes
 	}
 	return o
 }
@@ -61,10 +79,10 @@ type Proxy struct {
 func New(upstream string, redactor *redact.Redactor, logger *log.Logger, opts Options) (*Proxy, error) {
 	u, err := url.Parse(upstream)
 	if err != nil {
-		return nil, fmt.Errorf("parsing upstream URL %q: %w", upstream, err)
+		return nil, fmt.Errorf("parsing upstream URL: invalid URL")
 	}
 	if u.Scheme == "" || u.Host == "" {
-		return nil, fmt.Errorf("upstream URL %q must include a scheme and host", upstream)
+		return nil, fmt.Errorf("upstream URL must include a scheme and host")
 	}
 
 	opts = opts.withDefaults()
@@ -85,13 +103,17 @@ func New(upstream string, redactor *redact.Redactor, logger *log.Logger, opts Op
 
 // ServeHTTP implements http.Handler.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	body, err := io.ReadAll(r.Body)
+	defer r.Body.Close()
+	body, err := readAtMost(r.Body, p.options.MaxRequestBytes)
 	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			p.logf("status=%d error=request_too_large", http.StatusRequestEntityTooLarge)
+			http.Error(w, "request rejected: body exceeds configured limit", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "failed to read request body", http.StatusBadGateway)
 		return
 	}
-	r.Body.Close()
-
 	session := ""
 	ephemeralSession := true
 	if p.options.SessionHeader != "" {
@@ -113,12 +135,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Transform errors are deliberately generic and never contain matched
 		// values, request bodies, or mapping contents.
-		p.logf("status=%d error=%v content_encoding=%s path=%s", http.StatusUnprocessableEntity, err, safeContentEncoding(r.Header.Get("Content-Encoding")), r.URL.Path)
+		p.logf("status=%d error=%v content_encoding=%s", http.StatusUnprocessableEntity, err, safeContentEncoding(r.Header.Get("Content-Encoding")))
 		http.Error(w, "request rejected: body could not be safely inspected", http.StatusUnprocessableEntity)
 		return
 	}
 	if result.Blocked {
-		p.logRequest(r.URL.Path, http.StatusForbidden, result.Transformed, result.Categories)
+		p.logRequest(http.StatusForbidden, result.Transformed, result.Categories)
 		http.Error(w, "request blocked by local privacy policy", http.StatusForbidden)
 		return
 	}
@@ -155,43 +177,39 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
-	for k, vv := range resp.Header {
-		if k == "Content-Length" || k == "Transfer-Encoding" {
-			continue
-		}
-		for _, v := range vv {
-			w.Header().Add(k, v)
-		}
-	}
-	// Restoration can change the body length, so let the server choose the
-	// transfer encoding rather than trusting upstream's Content-Length.
-	w.Header().Del("Content-Length")
-	w.WriteHeader(resp.StatusCode)
-
 	ct := resp.Header.Get("Content-Type")
-	if strings.Contains(ct, "text/event-stream") || resp.Header.Get("Transfer-Encoding") == "chunked" {
+	streaming := strings.Contains(ct, "text/event-stream") || resp.Header.Get("Transfer-Encoding") == "chunked"
+	if streaming {
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
 		var rw interface {
 			io.Writer
 			Close() error
 		}
 		if strings.Contains(ct, "text/event-stream") {
-			rw = NewSSERestoringWriterForSession(w, p.redactor, session)
+			rw = NewSSERestoringWriterForSessionWithLimit(w, p.redactor, session, p.options.MaxSSEEventBytes)
 		} else {
 			rw = NewRestoringWriterForSession(w, p.redactor, session)
 		}
-		if _, err := io.Copy(rw, resp.Body); err != nil {
+		if _, err := io.Copy(rw, &cappedReader{r: resp.Body, remaining: p.options.MaxResponseBytes}); err != nil {
 			p.logf("streaming upstream response: %v", err)
-		}
-		if err := rw.Close(); err != nil {
+		} else if err := rw.Close(); err != nil {
 			p.logf("closing streaming response: %v", err)
 		}
 	} else {
-		respBody, err := io.ReadAll(resp.Body)
+		respBody, err := readAtMost(resp.Body, p.options.MaxResponseBytes)
 		if err != nil {
+			if errors.Is(err, errBodyTooLarge) {
+				p.logf("status=%d error=response_too_large", http.StatusBadGateway)
+				http.Error(w, "upstream response rejected: body exceeds configured limit", http.StatusBadGateway)
+				return
+			}
 			p.logf("reading upstream response body: %v", err)
-			p.logRequest(r.URL.Path, resp.StatusCode, result.Transformed, categories)
+			http.Error(w, "failed to read upstream response", http.StatusBadGateway)
 			return
 		}
+		copyResponseHeaders(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
 		if _, err := w.Write(p.redactor.RestoreResponseForSession(respBody, ct, session)); err != nil {
 			p.logf("writing response body: %v", err)
 		}
@@ -202,7 +220,45 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	p.logRequest(r.URL.Path, resp.StatusCode, result.Transformed, categories)
+	p.logRequest(resp.StatusCode, result.Transformed, categories)
+}
+
+type cappedReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+func (r *cappedReader) Read(p []byte) (int, error) {
+	if r.remaining <= 0 {
+		var probe [1]byte
+		n, err := r.r.Read(probe[:])
+		if n > 0 {
+			return 0, errBodyTooLarge
+		}
+		return 0, err
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.r.Read(p)
+	r.remaining -= int64(n)
+	return n, err
+}
+
+func readAtMost(r io.Reader, max int64) ([]byte, error) {
+	return io.ReadAll(&cappedReader{r: r, remaining: max})
+}
+
+func copyResponseHeaders(dst, src http.Header) {
+	for k, vv := range src {
+		if k == "Content-Length" || k == "Transfer-Encoding" {
+			continue
+		}
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+	dst.Del("Content-Length")
 }
 
 func safeContentEncoding(value string) string {
@@ -241,15 +297,15 @@ func (p *Proxy) logErrorResponse(status int, header http.Header) {
 	p.logger.Printf("upstream error status=%d %s", status, strings.Join(rl, " "))
 }
 
-func (p *Proxy) logRequest(path string, status, transformed int, categories []string) {
+func (p *Proxy) logRequest(status, transformed int, categories []string) {
 	if p.logger == nil {
 		return
 	}
 	if len(categories) == 0 {
-		p.logger.Printf("status=%d transformed=%d path=%s", status, transformed, path)
+		p.logger.Printf("status=%d transformed=%d", status, transformed)
 		return
 	}
-	p.logger.Printf("status=%d transformed=%d categories=%s path=%s", status, transformed, strings.Join(uniqueSorted(categories), ","), path)
+	p.logger.Printf("status=%d transformed=%d categories=%s", status, transformed, strings.Join(uniqueSorted(categories), ","))
 }
 
 func singleJoiningSlash(a, b string) string {

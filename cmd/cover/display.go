@@ -3,7 +3,9 @@ package main
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"strings"
 )
 
 type startDisplay struct {
@@ -57,7 +59,7 @@ func printStarted(w io.Writer, info startDisplay) {
 		fmt.Fprintf(w, "  %s %s\n", c(dim, "Status:"), c(green, fmt.Sprintf("running (pid %d)", info.PID)))
 	}
 	fmt.Fprintf(w, "  %s %s\n", c(dim, "Proxy:"), c(cyan, "http://"+info.Listen))
-	fmt.Fprintf(w, "  %s %s\n", c(dim, "Upstream:"), info.Upstream)
+	fmt.Fprintf(w, "  %s %s\n", c(dim, "Upstream:"), safeUpstreamDisplay(info.Upstream))
 	fmt.Fprintf(w, "  %s %s\n", c(dim, "Redaction log:"), info.LogFile)
 	fmt.Fprintln(w)
 
@@ -118,7 +120,7 @@ func printStatus(w io.Writer, info statusDisplay) {
 	if info.Running {
 		fmt.Fprintf(w, "  %s %s\n", c(dim, "Status:"), c(green, fmt.Sprintf("running (pid %d)", info.PID)))
 		fmt.Fprintf(w, "  %s %s\n", c(dim, "Proxy:"), c(cyan, "http://"+info.Listen))
-		fmt.Fprintf(w, "  %s %s\n", c(dim, "Upstream:"), info.Upstream)
+		fmt.Fprintf(w, "  %s %s\n", c(dim, "Upstream:"), safeUpstreamDisplay(info.Upstream))
 		fmt.Fprintf(w, "  %s %s\n", c(dim, "Redaction log:"), info.LogFile)
 		if info.DaemonLog != "" {
 			fmt.Fprintf(w, "  %s %s\n", c(dim, "Daemon log:"), info.DaemonLog)
@@ -133,6 +135,18 @@ func printStatus(w io.Writer, info statusDisplay) {
 		fmt.Fprintf(w, "    %s\n", c(yellow, "cover start --detach"))
 	}
 	fmt.Fprintln(w)
+}
+
+func safeUpstreamDisplay(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "<configured>"
+	}
+	origin := u.Scheme + "://" + u.Host
+	if u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return strings.TrimSuffix(origin, "/") + "/<redacted>"
+	}
+	return origin
 }
 
 func printStopped(w io.Writer) {

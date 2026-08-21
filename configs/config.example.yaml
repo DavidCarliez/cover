@@ -11,9 +11,23 @@ upstream: "https://api.anthropic.com"
 # Redaction events (category + count, never raw values) are appended here.
 log_file: "~/.local/share/cover/redactions.log"
 
+# Cover listens on loopback by default. Set allow_remote only when you
+# deliberately expose the proxy and have separate network access controls.
+network:
+  allow_remote: false
+
+# Hard caps prevent a peer or upstream from exhausting proxy memory. A request
+# over its limit is rejected with 413; an oversized buffered response returns
+# 502. An in-progress stream is terminated when its response or SSE-event cap
+# is exceeded.
+limits:
+  request_bytes: 16777216  # 16 MiB
+  response_bytes: 33554432 # 32 MiB
+  sse_event_bytes: 4194304 # 4 MiB
+
 # Timeouts for the upstream LLM API hop. response_header_timeout_ms applies
-# only until the first response byte; streaming bodies are not capped so long
-# SSE responses can run indefinitely.
+# only until the first response byte; the byte limits above remain active for
+# streaming bodies.
 upstream_timeouts:
   connect_timeout_ms: 10000
   response_header_timeout_ms: 120000

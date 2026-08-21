@@ -5,8 +5,10 @@ package config
 import (
 	"bytes"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -20,12 +22,24 @@ type Config struct {
 	Listen           string                             `yaml:"listen"`
 	Upstream         string                             `yaml:"upstream"`
 	LogFile          string                             `yaml:"log_file"`
+	Network          NetworkConfig                      `yaml:"network"`
+	Limits           LimitsConfig                       `yaml:"limits"`
 	UpstreamTimeouts UpstreamTimeoutsConfig             `yaml:"upstream_timeouts"`
 	Cache            CacheConfig                        `yaml:"cache"`
 	Detectors        DetectorsConfig                    `yaml:"detectors"`
 	Rules            map[string]detectors.CustomPattern `yaml:"rules"`
 	Mappings         MappingsConfig                     `yaml:"mappings"`
 	Media            MediaConfig                        `yaml:"media"`
+}
+
+type NetworkConfig struct {
+	AllowRemote bool `yaml:"allow_remote"`
+}
+
+type LimitsConfig struct {
+	RequestBytes  int64 `yaml:"request_bytes"`
+	ResponseBytes int64 `yaml:"response_bytes"`
+	SSEEventBytes int64 `yaml:"sse_event_bytes"`
 }
 
 type MappingsConfig struct {
@@ -130,6 +144,12 @@ func Default() *Config {
 		Listen:   defaultListen,
 		Upstream: "",
 		LogFile:  defaultLogPath(),
+		Network:  NetworkConfig{AllowRemote: false},
+		Limits: LimitsConfig{
+			RequestBytes:  16 << 20,
+			ResponseBytes: 32 << 20,
+			SSEEventBytes: 4 << 20,
+		},
 		UpstreamTimeouts: UpstreamTimeoutsConfig{
 			ConnectTimeoutMS:        10000,
 			ResponseHeaderTimeoutMS: 120000,
@@ -216,6 +236,12 @@ func Load(path string) (*Config, error) {
 
 // Validate rejects an invalid security policy instead of silently weakening it.
 func (c *Config) Validate() error {
+	if err := validateListen(c.Listen, c.Network.AllowRemote); err != nil {
+		return err
+	}
+	if c.Limits.RequestBytes <= 0 || c.Limits.ResponseBytes <= 0 || c.Limits.SSEEventBytes <= 0 {
+		return fmt.Errorf("request, response, and SSE event byte limits must be positive")
+	}
 	if c.Mappings.MaxSessions <= 0 || c.Mappings.MaxEntriesPerSession <= 0 || c.Mappings.SessionTTLMinutes <= 0 {
 		return fmt.Errorf("mapping limits and TTL must be positive")
 	}
@@ -255,6 +281,28 @@ func (c *Config) Validate() error {
 	}
 	if _, err := detectors.NewRegexDetector(c.Detectors.Regex.BuiltinCategories, rules); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateListen(addr string, allowRemote bool) error {
+	host, portText, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("listen must be a host:port address: %w", err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port < 1 || port > 65535 {
+		return fmt.Errorf("listen port must be between 1 and 65535")
+	}
+	if allowRemote {
+		return nil
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		return fmt.Errorf("listen host %q is not loopback; set network.allow_remote: true only with trusted network controls", host)
 	}
 	return nil
 }

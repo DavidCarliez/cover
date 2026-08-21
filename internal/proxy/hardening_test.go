@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
@@ -197,5 +198,110 @@ func TestDefaultLogsNeverContainBodiesOrMappings(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "status=400") {
 		t.Fatalf("log omitted status: %q", logs.String())
+	}
+}
+
+func TestAuditLogOmitsRequestPathAndQuery(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+	var logs bytes.Buffer
+	p, _ := New(upstream.URL, policyProxyRedactor(t), log.New(&logs, "", 0), Options{})
+	rw := httptest.NewRecorder()
+	p.ServeHTTP(rw, httptest.NewRequest(http.MethodPost, "/customer-secret/responses?token=query-secret", strings.NewReader(`{"input":"hello"}`)))
+	if strings.Contains(logs.String(), "customer-secret") || strings.Contains(logs.String(), "query-secret") || strings.Contains(logs.String(), "path=") {
+		t.Fatalf("audit log exposed request routing data: %q", logs.String())
+	}
+	if !strings.Contains(logs.String(), "status=200") {
+		t.Fatalf("audit log lost safe status metadata: %q", logs.String())
+	}
+}
+
+func TestInvalidUpstreamErrorOmitsConfiguredValue(t *testing.T) {
+	const configured = "https://router.example/secret-route/%zz"
+	_, err := New(configured, policyProxyRedactor(t), nil, Options{})
+	if err == nil {
+		t.Fatal("expected invalid upstream URL error")
+	}
+	if strings.Contains(err.Error(), "secret-route") || strings.Contains(err.Error(), "%zz") {
+		t.Fatalf("error exposed configured upstream value: %q", err)
+	}
+}
+
+func TestProxyRejectsOversizedRequestBeforeUpstream(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
+	defer upstream.Close()
+	p, _ := New(upstream.URL, policyProxyRedactor(t), nil, Options{MaxRequestBytes: 8})
+	rw := httptest.NewRecorder()
+	p.ServeHTTP(rw, httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{"input":"too large"}`)))
+	if rw.Code != http.StatusRequestEntityTooLarge || calls.Load() != 0 {
+		t.Fatalf("status=%d upstream calls=%d", rw.Code, calls.Load())
+	}
+}
+
+func TestProxyAcceptsBodiesAtConfiguredLimits(t *testing.T) {
+	const payload = `{"a":1}`
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		body, _ := io.ReadAll(req.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(body)
+	}))
+	defer upstream.Close()
+	p, _ := New(upstream.URL, policyProxyRedactor(t), nil, Options{
+		MaxRequestBytes:  int64(len(payload)),
+		MaxResponseBytes: int64(len(payload)),
+	})
+	rw := httptest.NewRecorder()
+	p.ServeHTTP(rw, httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(payload)))
+	if rw.Code != http.StatusOK || rw.Body.String() != payload {
+		t.Fatalf("status=%d body=%q", rw.Code, rw.Body.String())
+	}
+}
+
+func TestCappedReaderRejectsStreamingOverflow(t *testing.T) {
+	got, err := io.ReadAll(&cappedReader{r: strings.NewReader("123456"), remaining: 5})
+	if !errors.Is(err, errBodyTooLarge) {
+		t.Fatalf("error=%v, want errBodyTooLarge", err)
+	}
+	if string(got) != "12345" {
+		t.Fatalf("body=%q, want capped prefix", got)
+	}
+}
+
+func TestProxyRejectsOversizedNonStreamingResponse(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"value":"too large"}`))
+	}))
+	defer upstream.Close()
+	p, _ := New(upstream.URL, policyProxyRedactor(t), nil, Options{MaxResponseBytes: 8})
+	rw := httptest.NewRecorder()
+	p.ServeHTTP(rw, httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader(`{"input":"ok"}`)))
+	if rw.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d body=%q", rw.Code, rw.Body.String())
+	}
+	if strings.Contains(rw.Body.String(), "too large") {
+		t.Fatalf("oversized upstream body was forwarded: %q", rw.Body.String())
+	}
+}
+
+func TestSSERestoringWriterRejectsOversizedEvent(t *testing.T) {
+	var out bytes.Buffer
+	r := policyProxyRedactor(t)
+	rw := NewSSERestoringWriterForSessionWithLimit(&out, r, "s", 16)
+	if _, err := rw.Write([]byte("data: 12345678901234567890\n\n")); !errors.Is(err, ErrSSEEventTooLarge) {
+		t.Fatalf("error=%v, want ErrSSEEventTooLarge", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("oversized SSE event was forwarded: %q", out.String())
+	}
+	if err := rw.Close(); err != nil {
+		t.Fatalf("close after rejected event: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("close forwarded rejected SSE event: %q", out.String())
 	}
 }

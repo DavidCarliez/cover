@@ -166,7 +166,7 @@ func initCmd() *cobra.Command {
 			}
 
 			fmt.Printf("\nWrote config to %s\n", path)
-			fmt.Printf("Proxy will listen on %s and forward to %s\n\n", cfg.Listen, cfg.Upstream)
+			fmt.Printf("Proxy will listen on %s and forward to %s\n\n", cfg.Listen, safeUpstreamDisplay(cfg.Upstream))
 			fmt.Println("Point your agent at the proxy by setting its API base URL, e.g.:")
 			fmt.Printf("  export OPENAI_BASE_URL=http://%s/v1\n", cfg.Listen)
 			fmt.Printf("  export ANTHROPIC_BASE_URL=http://%s\n", cfg.Listen)
@@ -538,6 +538,9 @@ func runForeground() error {
 		ResponseHeaderTimeout: time.Duration(cfg.UpstreamTimeouts.ResponseHeaderTimeoutMS) * time.Millisecond,
 		SessionHeader:         cfg.Mappings.SessionHeader,
 		MediaImages:           cfg.Media.Images,
+		MaxRequestBytes:       cfg.Limits.RequestBytes,
+		MaxResponseBytes:      cfg.Limits.ResponseBytes,
+		MaxSSEEventBytes:      cfg.Limits.SSEEventBytes,
 	})
 	if err != nil {
 		return err
