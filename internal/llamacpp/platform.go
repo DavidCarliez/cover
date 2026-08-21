@@ -1,7 +1,7 @@
 // Package llamacpp manages an optional local llama-server subprocess
 // (downloaded from ggml-org/llama.cpp's GitHub releases) used as a
 // best-effort LLM-based fallback detector for sensitive text that regex
-// patterns miss. The core llm-guard proxy and regex detection work on every
+// patterns miss. The core Cover proxy and regex detection work on every
 // platform Go supports; this package only adds the LLM fallback on
 // platforms with a prebuilt llama-server binary, and degrades gracefully
 // (regex-only) everywhere else.

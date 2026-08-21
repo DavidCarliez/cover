@@ -1,25 +1,41 @@
-// Package config handles loading, saving, and defaulting llm-guard's
-// configuration file (~/.config/llmguard/config.yaml).
+// Package config handles loading, saving, and defaulting Cover's
+// configuration file (~/.config/cover/config.yaml).
 package config
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 // Config is the top-level configuration loaded from config.yaml.
 type Config struct {
-	Listen           string                 `yaml:"listen"`
-	Upstream         string                 `yaml:"upstream"`
-	LogFile          string                 `yaml:"log_file"`
-	UpstreamTimeouts UpstreamTimeoutsConfig `yaml:"upstream_timeouts"`
-	Cache            CacheConfig            `yaml:"cache"`
-	Detectors        DetectorsConfig        `yaml:"detectors"`
+	Listen           string                             `yaml:"listen"`
+	Upstream         string                             `yaml:"upstream"`
+	LogFile          string                             `yaml:"log_file"`
+	UpstreamTimeouts UpstreamTimeoutsConfig             `yaml:"upstream_timeouts"`
+	Cache            CacheConfig                        `yaml:"cache"`
+	Detectors        DetectorsConfig                    `yaml:"detectors"`
+	Rules            map[string]detectors.CustomPattern `yaml:"rules"`
+	Mappings         MappingsConfig                     `yaml:"mappings"`
+	Media            MediaConfig                        `yaml:"media"`
+}
+
+type MappingsConfig struct {
+	SessionHeader        string `yaml:"session_header"`
+	MaxSessions          int    `yaml:"max_sessions"`
+	MaxEntriesPerSession int    `yaml:"max_entries_per_session"`
+	SessionTTLMinutes    int    `yaml:"session_ttl_minutes"`
+}
+
+type MediaConfig struct {
+	Images string `yaml:"images"`
 }
 
 // UpstreamTimeoutsConfig bounds how long the proxy waits on the upstream LLM
@@ -51,19 +67,18 @@ type RegexConfig struct {
 }
 
 // LLMFallbackConfig configures the optional local-LLM semantic detector. When
-// enabled, llm-guard spawns a local `llama-server` subprocess (downloaded via
-// `llmguard models pull`) and uses it as an additional, best-effort detector
-// for sensitive content that regex patterns miss. If the server binary or
-// model is missing, or the server fails to start, llm-guard logs a warning
-// and continues with regex-only detection.
+// enabled, Cover spawns a local `llama-server` subprocess (downloaded via
+// `cover models pull`) and uses it as an additional detector for sensitive
+// content that regex patterns miss. Startup and request-time detector failures
+// are fatal/fail-closed while this detector is enabled.
 type LLMFallbackConfig struct {
 	Enabled bool `yaml:"enabled"`
 
 	// ServerPath is the path to the llama-server binary, set by
-	// `llmguard models pull`.
+	// `cover models pull`.
 	ServerPath string `yaml:"server_path"`
 	// ModelPath is the path to the GGUF model file, set by
-	// `llmguard models pull`.
+	// `cover models pull`.
 	ModelPath string `yaml:"model_path"`
 	// Port is the local port llama-server listens on.
 	Port int `yaml:"port"`
@@ -100,14 +115,14 @@ type LLMFallbackConfig struct {
 }
 
 const (
-	dirName       = "llmguard"
+	dirName       = "cover"
 	fileName      = "config.yaml"
 	logName       = "redactions.log"
 	defaultListen = "127.0.0.1:8317"
 )
 
 // Default returns a Config populated with sensible defaults. Upstream is
-// left blank and must be set by the user (via `llmguard init` or by editing
+// left blank and must be set by the user (via `cover init` or by editing
 // the config file).
 func Default() *Config {
 	return &Config{
@@ -122,6 +137,14 @@ func Default() *Config {
 			Enabled:    true,
 			MaxEntries: 10000,
 		},
+		Rules: map[string]detectors.CustomPattern{},
+		Mappings: MappingsConfig{
+			SessionHeader:        "X-Cover-Session",
+			MaxSessions:          128,
+			MaxEntriesPerSession: 10000,
+			SessionTTLMinutes:    60,
+		},
+		Media: MediaConfig{Images: "allow"},
 		Detectors: DetectorsConfig{
 			Regex: RegexConfig{
 				Enabled:           true,
@@ -144,7 +167,7 @@ func Default() *Config {
 	}
 }
 
-// Path returns the default config file path: ~/.config/llmguard/config.yaml.
+// Path returns the default config file path: ~/.config/cover/config.yaml.
 func Path() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -153,9 +176,9 @@ func Path() (string, error) {
 	return filepath.Join(home, ".config", dirName, fileName), nil
 }
 
-// StateDir returns the directory used for llm-guard's persistent local
+// StateDir returns the directory used for Cover's persistent local
 // state (logs, downloaded llama-server binaries, GGUF models):
-// ~/.local/share/llmguard.
+// ~/.local/share/cover.
 func StateDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -179,10 +202,54 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
 	cfg := Default()
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(cfg); err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("validating config %s: %w", path, err)
+	}
 	return cfg, nil
+}
+
+// Validate rejects an invalid security policy instead of silently weakening it.
+func (c *Config) Validate() error {
+	if c.Mappings.MaxSessions <= 0 || c.Mappings.MaxEntriesPerSession <= 0 || c.Mappings.SessionTTLMinutes <= 0 {
+		return fmt.Errorf("mapping limits and TTL must be positive")
+	}
+	switch c.Media.Images {
+	case "allow", "warn", "block":
+	default:
+		return fmt.Errorf("media.images must be allow, warn, or block")
+	}
+	rules := make([]detectors.CustomPattern, 0, len(c.Rules)+len(c.Detectors.Regex.CustomPatterns))
+	for _, rule := range c.Detectors.Regex.CustomPatterns {
+		if rule.Action != "" {
+			if err := redact.ValidateAction(rule.Action, rule.Generator); err != nil {
+				return fmt.Errorf("custom pattern %q: %w", rule.Name, err)
+			}
+		}
+		rules = append(rules, rule)
+	}
+	for name, rule := range c.Rules {
+		rule.Name = name
+		if rule.Category == "" {
+			rule.Category = name
+		}
+		if rule.Action == "" {
+			return fmt.Errorf("rule %q has no action", name)
+		}
+		if err := redact.ValidateAction(rule.Action, rule.Generator); err != nil {
+			return fmt.Errorf("rule %q: %w", name, err)
+		}
+		c.Rules[name] = rule
+		rules = append(rules, rule)
+	}
+	if _, err := detectors.NewRegexDetector(c.Detectors.Regex.BuiltinCategories, rules); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Save writes cfg to path as YAML, creating parent directories as needed.

@@ -30,7 +30,7 @@ body:
       label: Steps to reproduce
       description: Commands, config snippets, or request payloads that trigger the issue.
       placeholder: |
-        1. Run `llmguard start`
+        1. Run `cover start`
         2. Send request with ...
         3. See error
     validations:
@@ -39,7 +39,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: llm-guard version or commit
+      label: Cover version or commit
       placeholder: e.g. v0.1.0 or abc1234
     validations:
       required: false

@@ -1,5 +1,5 @@
 // Package daemon provides simple pidfile-based process management for
-// running llm-guard in the background.
+// running Cover in the background.
 package daemon
 
 import (
@@ -12,14 +12,14 @@ import (
 	"time"
 )
 
-// PidFilePath returns the path to llm-guard's pidfile:
-// ~/.local/share/llmguard/llmguard.pid
+// PidFilePath returns the path to Cover's pidfile:
+// ~/.local/share/cover/cover.pid
 func PidFilePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolving home directory: %w", err)
 	}
-	return filepath.Join(home, ".local", "share", "llmguard", "llmguard.pid"), nil
+	return filepath.Join(home, ".local", "share", "cover", "cover.pid"), nil
 }
 
 // Write records pid in the pidfile at path, creating parent directories as needed.
@@ -62,7 +62,7 @@ func IsRunning(pid int) bool {
 func Stop(path string) error {
 	pid, err := Read(path)
 	if err != nil {
-		return fmt.Errorf("llm-guard is not running (no pidfile)")
+		return fmt.Errorf("Cover is not running (no pidfile)")
 	}
 	return stopPID(path, pid)
 }
@@ -85,7 +85,7 @@ func StopIfRunning(path string, timeout time.Duration) error {
 func stopPID(path string, pid int) error {
 	if !IsRunning(pid) {
 		_ = Remove(path)
-		return fmt.Errorf("llm-guard is not running (stale pidfile removed)")
+		return fmt.Errorf("Cover is not running (stale pidfile removed)")
 	}
 	process, err := os.FindProcess(pid)
 	if err != nil {
@@ -108,5 +108,5 @@ func stopPIDAndWait(path string, pid int, timeout time.Duration) error {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return fmt.Errorf("timed out waiting for llm-guard (pid %d) to stop", pid)
+	return fmt.Errorf("timed out waiting for Cover (pid %d) to stop", pid)
 }

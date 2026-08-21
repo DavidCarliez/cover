@@ -1,8 +1,6 @@
 # Binaries
-/llmguard
-/llmguard-*
-llmguard
-llmguard-*
+/cover
+/cover-*
 
 # Go build & test artifacts
 *.exe
@@ -35,6 +33,6 @@ Thumbs.db
 .env.*
 !.env.example
 
-# llm-guard runtime state (lives under ~/.local/share/llmguard at runtime)
+# Cover runtime state (lives under ~/.local/share/cover at runtime)
 *.pid
 *.log

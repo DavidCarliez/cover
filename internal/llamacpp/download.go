@@ -45,7 +45,7 @@ func FetchRelease(tag string) (*Release, error) {
 		return nil, err
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
-	req.Header.Set("User-Agent", "llm-guard")
+	req.Header.Set("User-Agent", "Cover")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

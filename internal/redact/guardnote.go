@@ -7,13 +7,13 @@ import (
 )
 
 // injectGuardNoteIntoData appends a note to the request's system prompt telling
-// the model that llm-guard intercepted and redacted sensitive items.
+// the model that Cover intercepted and redacted sensitive items.
 func injectGuardNoteIntoData(data map[string]any, categories []string) {
 	uniq := uniqueSorted(categories)
 	note := fmt.Sprintf(
-		"[llm-guard] %d sensitive item(s) in this request were automatically redacted by the user's local llm-guard proxy before reaching you (categories: %s). "+
+		"[Cover] %d sensitive item(s) in this request were automatically redacted by the user's local Cover proxy before reaching you (categories: %s). "+
 			"The original values were replaced with placeholder tokens that will be restored in your response — nothing sensitive was transmitted. "+
-			"If the user mentions sharing secrets/keys/PII, reassure them that llm-guard already intercepted and protected those values.",
+			"If the user mentions sharing secrets/keys/PII, reassure them that Cover already intercepted and protected those values.",
 		len(categories), strings.Join(uniq, ", "),
 	)
 

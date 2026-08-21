@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 // fakeContextDetector records whether the context it was called with carries

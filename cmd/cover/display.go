@@ -36,7 +36,7 @@ func printStarted(w io.Writer, info startDisplay) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, c(bold+green, "  ┌─────────────────────────────────────────────────────┐"))
 	fmt.Fprintln(w, c(bold+green, "  │                                                     │"))
-	fmt.Fprintln(w, c(bold+green, "  │   ✓  llm-guard is protecting you                    │"))
+	fmt.Fprintln(w, c(bold+green, "  │   ✓  Cover is protecting you                        │"))
 	fmt.Fprintln(w, c(bold+green, "  │                                                     │"))
 	fmt.Fprintln(w, c(bold+green, "  └─────────────────────────────────────────────────────┘"))
 	fmt.Fprintln(w)
@@ -65,7 +65,7 @@ func printStarted(w io.Writer, info startDisplay) {
 		fmt.Fprintf(w, "  %s %s\n", c(dim, "Daemon log:"), info.LogPath)
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, c(dim, "  Running in the background. To stand down:"))
-		fmt.Fprintf(w, "    %s\n", c(yellow, "llmguard stop"))
+		fmt.Fprintf(w, "    %s\n", c(yellow, "cover stop"))
 	} else {
 		fmt.Fprintln(w, c(dim, "  Press Ctrl+C to stop — and face the cruel servers unguarded again."))
 	}
@@ -103,13 +103,13 @@ func printStatus(w io.Writer, info statusDisplay) {
 	if info.Running {
 		fmt.Fprintln(w, c(bold+green, "  ┌─────────────────────────────────────────────────────┐"))
 		fmt.Fprintln(w, c(bold+green, "  │                                                     │"))
-		fmt.Fprintln(w, c(bold+green, "  │   ✓  llm-guard is protecting you                    │"))
+		fmt.Fprintln(w, c(bold+green, "  │   ✓  Cover is protecting you                        │"))
 		fmt.Fprintln(w, c(bold+green, "  │                                                     │"))
 		fmt.Fprintln(w, c(bold+green, "  └─────────────────────────────────────────────────────┘"))
 	} else {
 		fmt.Fprintln(w, c(bold+yellow, "  ┌─────────────────────────────────────────────────────┐"))
 		fmt.Fprintln(w, c(bold+yellow, "  │                                                     │"))
-		fmt.Fprintln(w, c(bold+yellow, "  │   ○  llm-guard is not running                       │"))
+		fmt.Fprintln(w, c(bold+yellow, "  │   ○  Cover is not running                           │"))
 		fmt.Fprintln(w, c(bold+yellow, "  │                                                     │"))
 		fmt.Fprintln(w, c(bold+yellow, "  └─────────────────────────────────────────────────────┘"))
 	}
@@ -124,13 +124,13 @@ func printStatus(w io.Writer, info statusDisplay) {
 			fmt.Fprintf(w, "  %s %s\n", c(dim, "Daemon log:"), info.DaemonLog)
 		}
 		fmt.Fprintln(w)
-		fmt.Fprintln(w, c(dim, "  Commands: llmguard stop · llmguard restart"))
+		fmt.Fprintln(w, c(dim, "  Commands: cover stop · cover restart"))
 	} else {
 		fmt.Fprintln(w, c(dim, "  The cruel upstream LLM servers are unchallenged."))
 		fmt.Fprintln(w, c(dim, "  Your secrets have no local guardian right now."))
 		fmt.Fprintln(w)
 		fmt.Fprintln(w, c(dim, "  To stand up the proxy:"))
-		fmt.Fprintf(w, "    %s\n", c(yellow, "llmguard start --detach"))
+		fmt.Fprintf(w, "    %s\n", c(yellow, "cover start --detach"))
 	}
 	fmt.Fprintln(w)
 }
@@ -155,7 +155,7 @@ func printStopped(w io.Writer) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, c(bold+red, "  ┌─────────────────────────────────────────────────────┐"))
 	fmt.Fprintln(w, c(bold+red, "  │                                                     │"))
-	fmt.Fprintln(w, c(bold+red, "  │   ✗  llm-guard is stopped                           │"))
+	fmt.Fprintln(w, c(bold+red, "  │   ✗  Cover is stopped                               │"))
 	fmt.Fprintln(w, c(bold+red, "  │                                                     │"))
 	fmt.Fprintln(w, c(bold+red, "  └─────────────────────────────────────────────────────┘"))
 	fmt.Fprintln(w)
@@ -172,7 +172,7 @@ func printStopped(w io.Writer) {
 	fmt.Fprintln(w, "    • Internal codenames and customer data")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, c(dim, "  To shield yourself again:"))
-	fmt.Fprintf(w, "    %s\n", c(yellow, "llmguard start --detach"))
+	fmt.Fprintf(w, "    %s\n", c(yellow, "cover start --detach"))
 	fmt.Fprintln(w)
 }
 

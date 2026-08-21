@@ -1,4 +1,4 @@
-# Contributing to llm-guard
+# Contributing to Cover
 
 Thank you for your interest in contributing! This project is open source and
 welcomes bug reports, feature requests, documentation improvements, and code
@@ -24,14 +24,14 @@ By participating, you agree to uphold it.
 1. Fork the repository and clone your fork:
 
    ```sh
-   git clone https://github.com/<your-username>/llm-guard.git
-   cd llm-guard
+   git clone https://github.com/<your-username>/cover.git
+   cd cover
    ```
 
 2. Build the binary:
 
    ```sh
-   go build -o llmguard ./cmd/llmguard
+   go build -o cover ./cmd/cover
    ```
 
 3. Run the test suite:
@@ -46,9 +46,9 @@ By participating, you agree to uphold it.
 4. Try your changes locally:
 
    ```sh
-   ./llmguard test          # offline redaction smoke test
-   ./llmguard init          # create a local config (optional)
-   ./llmguard start         # run the proxy (optional)
+   ./cover test          # offline redaction smoke test
+   ./cover init          # create a local config (optional)
+   ./cover start         # run the proxy (optional)
    ```
 
 ## Pull Request Guidelines
@@ -78,7 +78,7 @@ By participating, you agree to uphold it.
 
 | Path | Purpose |
 |------|---------|
-| `cmd/llmguard/` | CLI entrypoint and subcommands |
+| `cmd/cover/` | CLI entrypoint and subcommands |
 | `internal/proxy/` | HTTP reverse proxy |
 | `internal/redact/` | Redaction engine and placeholder mapping |
 | `internal/redact/detectors/` | Regex and custom pattern detectors |

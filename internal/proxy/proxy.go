@@ -14,9 +14,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
-	"llmguard/internal/redact"
+	"github.com/DavidCarliez/cover/internal/redact"
 )
 
 const (
@@ -28,6 +29,8 @@ const (
 type Options struct {
 	ConnectTimeout        time.Duration
 	ResponseHeaderTimeout time.Duration
+	SessionHeader         string
+	MediaImages           string
 }
 
 func (o Options) withDefaults() Options {
@@ -43,10 +46,12 @@ func (o Options) withDefaults() Options {
 // Proxy forwards requests to a single upstream base URL, redacting request
 // bodies and restoring response bodies along the way.
 type Proxy struct {
-	upstream *url.URL
-	client   *http.Client
-	redactor *redact.Redactor
-	logger   *log.Logger
+	upstream    *url.URL
+	client      *http.Client
+	redactor    *redact.Redactor
+	logger      *log.Logger
+	options     Options
+	nextSession atomic.Uint64
 }
 
 // New creates a Proxy that forwards to upstream (must include scheme and
@@ -74,6 +79,7 @@ func New(upstream string, redactor *redact.Redactor, logger *log.Logger, opts Op
 		client:   &http.Client{Transport: transport},
 		redactor: redactor,
 		logger:   logger,
+		options:  opts,
 	}, nil
 }
 
@@ -86,7 +92,37 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body.Close()
 
-	redactedBody, categories := p.redactor.RedactForProxy(body)
+	session := ""
+	ephemeralSession := true
+	if p.options.SessionHeader != "" {
+		session = r.Header.Get(p.options.SessionHeader)
+		ephemeralSession = session == ""
+	}
+	if len(session) > 128 {
+		http.Error(w, "request rejected: invalid local session identifier", http.StatusBadRequest)
+		return
+	}
+	if ephemeralSession {
+		session = fmt.Sprintf("request-%d", p.nextSession.Add(1))
+		defer p.redactor.EndSession(session)
+	}
+	// Do not inject protocol-specific guard notes. Generic recursive rewriting
+	// must preserve the upstream request schema (Responses, Chat, Anthropic, or
+	// another OpenAI-compatible router dialect).
+	result, err := p.redactor.Transform(body, session, false, p.options.MediaImages)
+	if err != nil {
+		// Transform errors are deliberately generic and never contain matched
+		// values, request bodies, or mapping contents.
+		p.logf("status=%d error=%v content_encoding=%s path=%s", http.StatusUnprocessableEntity, err, safeContentEncoding(r.Header.Get("Content-Encoding")), r.URL.Path)
+		http.Error(w, "request rejected: body could not be safely inspected", http.StatusUnprocessableEntity)
+		return
+	}
+	if result.Blocked {
+		p.logRequest(r.URL.Path, http.StatusForbidden, result.Transformed, result.Categories)
+		http.Error(w, "request blocked by local privacy policy", http.StatusForbidden)
+		return
+	}
+	redactedBody, categories := result.Body, result.Categories
 
 	target := *p.upstream
 	target.Path = singleJoiningSlash(p.upstream.Path, r.URL.Path)
@@ -99,6 +135,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	outReq.Header = r.Header.Clone()
 	outReq.Header.Del("Connection")
+	if p.options.SessionHeader != "" {
+		outReq.Header.Del(p.options.SessionHeader)
+	}
 	// Let net/http negotiate and transparently decompress the response
 	// itself. If we forward the client's Accept-Encoding verbatim, Go's
 	// transport assumes *we* will handle decoding and leaves the body
@@ -111,7 +150,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.client.Do(outReq)
 	if err != nil {
-		http.Error(w, "upstream request failed: "+err.Error(), http.StatusBadGateway)
+		http.Error(w, "upstream request failed", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
@@ -136,9 +175,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Close() error
 		}
 		if strings.Contains(ct, "text/event-stream") {
-			rw = NewSSERestoringWriter(w, p.redactor)
+			rw = NewSSERestoringWriterForSession(w, p.redactor, session)
 		} else {
-			rw = NewRestoringWriter(w, p.redactor)
+			rw = NewRestoringWriterForSession(w, p.redactor, session)
 		}
 		if _, err := io.Copy(rw, resp.Body); err != nil {
 			p.logf("streaming upstream response: %v", err)
@@ -150,20 +189,35 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
 			p.logf("reading upstream response body: %v", err)
-			p.logRequest(r.URL.Path, resp.StatusCode, categories)
+			p.logRequest(r.URL.Path, resp.StatusCode, result.Transformed, categories)
 			return
 		}
-		if _, err := w.Write(p.redactor.RestoreResponse(respBody, ct)); err != nil {
+		if _, err := w.Write(p.redactor.RestoreResponseForSession(respBody, ct, session)); err != nil {
 			p.logf("writing response body: %v", err)
 		}
 		// Error response bodies are generic API error messages (no user
 		// secrets), so logging them helps diagnose upstream rejections.
 		if resp.StatusCode >= 400 {
-			p.logErrorBody(resp.StatusCode, resp.Header, respBody)
+			p.logErrorResponse(resp.StatusCode, resp.Header)
 		}
 	}
 
-	p.logRequest(r.URL.Path, resp.StatusCode, categories)
+	p.logRequest(r.URL.Path, resp.StatusCode, result.Transformed, categories)
+}
+
+func safeContentEncoding(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "identity":
+		return "identity"
+	case "gzip":
+		return "gzip"
+	case "zstd":
+		return "zstd"
+	case "br":
+		return "br"
+	default:
+		return "other"
+	}
 }
 
 func (p *Proxy) logf(format string, args ...any) {
@@ -172,14 +226,9 @@ func (p *Proxy) logf(format string, args ...any) {
 	}
 }
 
-func (p *Proxy) logErrorBody(status int, header http.Header, body []byte) {
+func (p *Proxy) logErrorResponse(status int, header http.Header) {
 	if p.logger == nil {
 		return
-	}
-	const maxLen = 2000
-	b := body
-	if len(b) > maxLen {
-		b = b[:maxLen]
 	}
 	var rl []string
 	for k, vv := range header {
@@ -189,18 +238,18 @@ func (p *Proxy) logErrorBody(status int, header http.Header, body []byte) {
 		}
 	}
 	sort.Strings(rl)
-	p.logger.Printf("upstream error status=%d %s body=%s", status, strings.Join(rl, " "), string(b))
+	p.logger.Printf("upstream error status=%d %s", status, strings.Join(rl, " "))
 }
 
-func (p *Proxy) logRequest(path string, status int, categories []string) {
+func (p *Proxy) logRequest(path string, status, transformed int, categories []string) {
 	if p.logger == nil {
 		return
 	}
 	if len(categories) == 0 {
-		p.logger.Printf("status=%d redacted=0 path=%s", status, path)
+		p.logger.Printf("status=%d transformed=%d path=%s", status, transformed, path)
 		return
 	}
-	p.logger.Printf("status=%d redacted=%d categories=%s path=%s", status, len(categories), strings.Join(uniqueSorted(categories), ","), path)
+	p.logger.Printf("status=%d transformed=%d categories=%s path=%s", status, transformed, strings.Join(uniqueSorted(categories), ","), path)
 }
 
 func singleJoiningSlash(a, b string) string {

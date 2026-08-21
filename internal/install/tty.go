@@ -21,4 +21,3 @@ func openTerminalIO() (terminalIO, error) {
 	}
 	return terminalIO{in: tty, out: tty}, nil
 }
-

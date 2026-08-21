@@ -1,10 +1,11 @@
-// Command llmguard runs a local HTTP proxy that redacts secrets and other
+// Command cover runs a local HTTP proxy that redacts secrets and other
 // sensitive data from requests before forwarding them to a remote LLM API,
 // restoring the original values in the response.
 package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -14,23 +15,24 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"llmguard/internal/config"
-	"llmguard/internal/daemon"
-	"llmguard/internal/install"
-	"llmguard/internal/llamacpp"
-	"llmguard/internal/proxy"
-	"llmguard/internal/redact"
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/config"
+	"github.com/DavidCarliez/cover/internal/daemon"
+	"github.com/DavidCarliez/cover/internal/install"
+	"github.com/DavidCarliez/cover/internal/llamacpp"
+	"github.com/DavidCarliez/cover/internal/proxy"
+	"github.com/DavidCarliez/cover/internal/redact"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 // Local LLM fallback model: a small instruction-tuned GGUF model used by
-// `llmguard models pull`.
+// `cover models pull`.
 const (
 	modelFileName = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
 	modelURL      = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
@@ -38,15 +40,15 @@ const (
 
 func main() {
 	root := &cobra.Command{
-		Use:   "llmguard",
+		Use:   "cover",
 		Short: "Local secrets-redacting proxy for LLM API traffic",
-		Long: "llm-guard runs a local proxy that any agent can point its API base URL at.\n" +
+		Long: "Cover runs a local proxy that any agent can point its API base URL at.\n" +
 			"It redacts secrets, API keys, and other sensitive data from requests before\n" +
 			"forwarding them to the real LLM provider, and restores the original values\n" +
 			"in the response.",
 	}
 
-	root.AddCommand(installCmd(), envCmd(), initCmd(), startCmd(), stopCmd(), restartCmd(), statusCmd(), testCmd(), modelsCmd())
+	root.AddCommand(installCmd(), envCmd(), initCmd(), startCmd(), stopCmd(), restartCmd(), statusCmd(), testCmd(), inspectCmd(), modelsCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
@@ -63,7 +65,7 @@ func installCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "install",
-		Short: "Configure llm-guard for your agents, start the proxy, and set up shell exports",
+		Short: "Configure Cover for your agents, start the proxy, and set up shell exports",
 		Long: "Interactive setup that writes config, starts the proxy in the background,\n" +
 			"adds BASE_URL exports to your shell profile, and prints a ready summary.\n\n" +
 			"Usually invoked by scripts/install.sh after building the binary.",
@@ -106,7 +108,7 @@ func envCmd() *cobra.Command {
 				return err
 			}
 			if len(agents) == 0 {
-				return fmt.Errorf("no saved agent config — run `llmguard install` first")
+				return fmt.Errorf("no saved agent config — run `cover install` first")
 			}
 			cfg, err := loadOrDefaultConfig()
 			if err != nil {
@@ -123,7 +125,7 @@ func envCmd() *cobra.Command {
 func initCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "init",
-		Short: "Create the llm-guard config file",
+		Short: "Create the Cover config file",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := config.Path()
 			if err != nil {
@@ -136,7 +138,7 @@ func initCmd() *cobra.Command {
 
 			cfg := config.Default()
 
-			fmt.Println("Which LLM API should llm-guard proxy to?")
+			fmt.Println("Which LLM API should Cover proxy to?")
 			fmt.Println("  1) OpenAI    (https://api.openai.com)")
 			fmt.Println("  2) Anthropic (https://api.anthropic.com)")
 			fmt.Println("  3) Custom URL")
@@ -168,7 +170,7 @@ func initCmd() *cobra.Command {
 			fmt.Println("Point your agent at the proxy by setting its API base URL, e.g.:")
 			fmt.Printf("  export OPENAI_BASE_URL=http://%s/v1\n", cfg.Listen)
 			fmt.Printf("  export ANTHROPIC_BASE_URL=http://%s\n", cfg.Listen)
-			fmt.Println("\nThen run: llmguard start")
+			fmt.Println("\nThen run: cover start")
 			return nil
 		},
 	}
@@ -318,6 +320,56 @@ func testCmd() *cobra.Command {
 	}
 }
 
+func inspectCmd() *cobra.Command {
+	var session string
+	cmd := &cobra.Command{
+		Use:   "inspect request.json",
+		Short: "Show the protected request that would be sent upstream without forwarding it",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadOrDefaultConfig()
+			if err != nil {
+				return err
+			}
+			if err := cfg.Validate(); err != nil {
+				return err
+			}
+			body, err := os.ReadFile(args[0])
+			if err != nil {
+				return fmt.Errorf("reading request file: %w", err)
+			}
+			r, cleanup, err := buildRedactor(cfg)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			result, err := r.Transform(body, session, false, cfg.Media.Images)
+			if err != nil {
+				return err
+			}
+			var transformed any
+			if len(result.Body) > 0 {
+				if err := json.Unmarshal(result.Body, &transformed); err != nil {
+					return fmt.Errorf("encoding inspection result")
+				}
+			}
+			output := struct {
+				Categories  []string             `json:"categories"`
+				Matches     []redact.MatchReport `json:"matches"`
+				Transformed int                  `json:"transformed"`
+				Blocked     bool                 `json:"blocked"`
+				Warnings    []string             `json:"warnings,omitempty"`
+				Request     any                  `json:"transformed_request"`
+			}{result.Categories, result.Matches, result.Transformed, result.Blocked, result.Warnings, transformed}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(output)
+		},
+	}
+	cmd.Flags().StringVar(&session, "session", "inspect", "local mapping session identifier")
+	return cmd
+}
+
 func modelsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "models",
@@ -404,7 +456,7 @@ func modelsPullCmd() *cobra.Command {
 			fmt.Printf("\nServer binary: %s\n", serverPath)
 			fmt.Printf("Model file:    %s\n", modelPath)
 			if cfg.Detectors.LLMFallback.Enabled {
-				fmt.Println("\nLLM fallback enabled. Restart llm-guard (`llmguard restart`) to apply.")
+				fmt.Println("\nLLM fallback enabled. Restart Cover (`cover restart`) to apply.")
 			} else {
 				fmt.Printf("\nTo enable the LLM fallback later, set `detectors.llm_fallback.enabled: true` in %s\n", cfgPath)
 			}
@@ -437,11 +489,11 @@ func modelsStatusCmd() *cobra.Command {
 			printPath := func(label, path string) {
 				switch {
 				case path == "":
-					fmt.Printf("%s (not set — run `llmguard models pull`)\n", label)
+					fmt.Printf("%s (not set — run `cover models pull`)\n", label)
 				case fileExists(path):
 					fmt.Printf("%s %s (present)\n", label, path)
 				default:
-					fmt.Printf("%s %s (missing — run `llmguard models pull`)\n", label, path)
+					fmt.Printf("%s %s (missing — run `cover models pull`)\n", label, path)
 				}
 			}
 			printPath("server_path:", lf.ServerPath)
@@ -459,14 +511,14 @@ func runForeground() error {
 		return err
 	}
 	if !config.Exists(cfgPath) {
-		return fmt.Errorf("no config found at %s — run `llmguard init` first", cfgPath)
+		return fmt.Errorf("no config found at %s — run `cover init` first", cfgPath)
 	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return err
 	}
 	if cfg.Upstream == "" {
-		return fmt.Errorf("upstream not set in %s — edit the config or re-run `llmguard init`", cfgPath)
+		return fmt.Errorf("upstream not set in %s — edit the config or re-run `cover init`", cfgPath)
 	}
 
 	redactor, cleanupRedactor, err := buildRedactor(cfg)
@@ -484,6 +536,8 @@ func runForeground() error {
 	p, err := proxy.New(cfg.Upstream, redactor, logger, proxy.Options{
 		ConnectTimeout:        time.Duration(cfg.UpstreamTimeouts.ConnectTimeoutMS) * time.Millisecond,
 		ResponseHeaderTimeout: time.Duration(cfg.UpstreamTimeouts.ResponseHeaderTimeoutMS) * time.Millisecond,
+		SessionHeader:         cfg.Mappings.SessionHeader,
+		MediaImages:           cfg.Media.Images,
 	})
 	if err != nil {
 		return err
@@ -516,7 +570,7 @@ func runForeground() error {
 		srv.Close()
 	}()
 
-	if os.Getenv("LLM_GUARD_NO_BANNER") == "" {
+	if os.Getenv("COVER_NO_BANNER") == "" {
 		printStarted(os.Stdout, startDisplay{
 			Listen:   cfg.Listen,
 			Upstream: cfg.Upstream,
@@ -542,7 +596,7 @@ func startDetached() error {
 		return err
 	}
 	if !config.Exists(cfgPath) {
-		return fmt.Errorf("no config found at %s — run `llmguard init` first", cfgPath)
+		return fmt.Errorf("no config found at %s — run `cover init` first", cfgPath)
 	}
 
 	cfg, err := config.Load(cfgPath)
@@ -555,11 +609,11 @@ func startDetached() error {
 		return err
 	}
 	if pid, err := daemon.Read(pidPath); err == nil && daemon.IsRunning(pid) {
-		return fmt.Errorf("llm-guard is already running (pid %d)", pid)
+		return fmt.Errorf("Cover is already running (pid %d)", pid)
 	}
 	if daemon.AddrInUse(cfg.Listen) {
 		if pid, err := daemon.FindListenerPID(cfg.Listen); err == nil {
-			return fmt.Errorf("llm-guard is already running on %s (pid %d); use `llmguard stop`", cfg.Listen, pid)
+			return fmt.Errorf("Cover is already running on %s (pid %d); use `cover stop`", cfg.Listen, pid)
 		}
 		return fmt.Errorf("port %s is already in use", cfg.Listen)
 	}
@@ -581,7 +635,7 @@ func startDetached() error {
 	defer logFile.Close()
 
 	cmd := exec.Command(exe, "start")
-	cmd.Env = append(os.Environ(), "LLM_GUARD_NO_BANNER=1")
+	cmd.Env = append(os.Environ(), "COVER_NO_BANNER=1")
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
 	cmd.SysProcAttr = detachSysProcAttr()
@@ -591,7 +645,7 @@ func startDetached() error {
 
 	if err := daemon.WaitForListen(cfg.Listen, 5*time.Second); err != nil {
 		_ = cmd.Process.Kill()
-		return fmt.Errorf("llm-guard failed to start (see %s): %w", logPath, err)
+		return fmt.Errorf("Cover failed to start (see %s): %w", logPath, err)
 	}
 
 	pid := cmd.Process.Pid
@@ -633,12 +687,35 @@ func loadOrDefaultConfig() (*config.Config, error) {
 // must be called when the redactor is no longer needed; it stops the local
 // LLM fallback subprocess (if one was started).
 func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
-	store := redact.NewStore()
+	if err := cfg.Validate(); err != nil {
+		return nil, func() {}, err
+	}
+	store := redact.NewStoreWithOptions(redact.StoreOptions{
+		MaxSessions:          cfg.Mappings.MaxSessions,
+		MaxEntriesPerSession: cfg.Mappings.MaxEntriesPerSession,
+		SessionTTL:           time.Duration(cfg.Mappings.SessionTTLMinutes) * time.Minute,
+	})
 	cleanup := func() {}
 
 	var dets []detectors.Detector
-	if cfg.Detectors.Regex.Enabled {
-		rd, err := detectors.NewRegexDetector(cfg.Detectors.Regex.BuiltinCategories, cfg.Detectors.Regex.CustomPatterns)
+	if cfg.Detectors.Regex.Enabled || len(cfg.Rules) > 0 {
+		var categories []string
+		var custom []detectors.CustomPattern
+		if cfg.Detectors.Regex.Enabled {
+			categories = cfg.Detectors.Regex.BuiltinCategories
+			custom = append(custom, cfg.Detectors.Regex.CustomPatterns...)
+		}
+		names := make([]string, 0, len(cfg.Rules))
+		for name := range cfg.Rules {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			rule := cfg.Rules[name]
+			rule.Name = name
+			custom = append(custom, rule)
+		}
+		rd, err := detectors.NewRegexDetector(categories, custom)
 		if err != nil {
 			return nil, cleanup, fmt.Errorf("configuring regex detector: %w", err)
 		}
@@ -660,6 +737,8 @@ func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
 			dets = append(dets, det)
 			llmBudget = time.Duration(cfg.Detectors.LLMFallback.OverallTimeoutMS) * time.Millisecond
 			cleanup = llmCleanup
+		} else {
+			return nil, cleanup, fmt.Errorf("enabled local LLM detector is unavailable; refusing to start with a weaker policy")
 		}
 	}
 
@@ -672,19 +751,19 @@ func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
 // regex-only detection — the LLM fallback is strictly best-effort.
 func startLLMFallback(lf config.LLMFallbackConfig) (*llamacpp.Detector, func(), bool) {
 	warn := func(format string, args ...any) {
-		fmt.Fprintf(os.Stderr, "llm-guard: "+format+"; continuing with regex-only detection.\n", args...)
+		fmt.Fprintf(os.Stderr, "Cover: "+format+"; continuing with regex-only detection.\n", args...)
 	}
 
 	if lf.ServerPath == "" || lf.ModelPath == "" {
-		warn("LLM fallback is enabled but server_path/model_path are not set (run `llmguard models pull`)")
+		warn("LLM fallback is enabled but server_path/model_path are not set (run `cover models pull`)")
 		return nil, nil, false
 	}
 	if !fileExists(lf.ServerPath) {
-		warn("LLM fallback server binary not found at %s (run `llmguard models pull`)", lf.ServerPath)
+		warn("LLM fallback server binary not found at %s (run `cover models pull`)", lf.ServerPath)
 		return nil, nil, false
 	}
 	if !fileExists(lf.ModelPath) {
-		warn("LLM fallback model not found at %s (run `llmguard models pull`)", lf.ModelPath)
+		warn("LLM fallback model not found at %s (run `cover models pull`)", lf.ModelPath)
 		return nil, nil, false
 	}
 

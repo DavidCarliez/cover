@@ -1,15 +1,15 @@
-# Example llm-guard configuration.
-# `llmguard init` writes this file to ~/.config/llmguard/config.yaml.
+# Example Cover configuration.
+# `cover init` writes this file to ~/.config/cover/config.yaml.
 
 # Address the local proxy listens on. Point your agent's API base URL here.
 listen: "127.0.0.1:8317"
 
 # The real LLM API to forward (redacted) requests to. Any base URL works —
-# llm-guard passes through method, path, query string, and headers.
+# Cover passes through method, path, query string, and headers.
 upstream: "https://api.anthropic.com"
 
 # Redaction events (category + count, never raw values) are appended here.
-log_file: "~/.local/share/llmguard/redactions.log"
+log_file: "~/.local/share/cover/redactions.log"
 
 # Timeouts for the upstream LLM API hop. response_header_timeout_ms applies
 # only until the first response byte; streaming bodies are not capped so long
@@ -22,6 +22,39 @@ upstream_timeouts:
 cache:
   enabled: true
   max_entries: 10000
+
+# Reversible mappings live only in memory. Send a stable session header when
+# mappings must survive across multiple agent turns. Requests without the
+# header receive an isolated, request-scoped mapping that is deleted afterward.
+mappings:
+  session_header: "X-Cover-Session"
+  max_sessions: 128
+  max_entries_per_session: 10000
+  session_ttl_minutes: 60
+
+# Image pixels are not inspected for sensitive content. Choose block when
+# screenshots or other media must never leave the machine uninspected.
+media:
+  images: allow # allow, warn, or block
+
+# Declarative policy rules. A rule can use pattern or detector: builtin_<type>.
+# Actions: pseudonymize, placeholder, mask, redact, block, allow.
+rules:
+  internal_ipv4:
+    detector: builtin_ipv4
+    action: pseudonymize
+    generator: ipv4
+    priority: 20
+  password:
+    pattern: '(?i)(password|passwd|pwd)\s*[:=]\s*(?P<value>[^\s,;]+)'
+    category: credential
+    action: pseudonymize
+    generator: password
+    priority: 50
+  forbidden_api_key:
+    pattern: '(?i)api[_-]?key\s*[:=]\s*(?P<value>[A-Za-z0-9._-]{16,})'
+    action: block
+    priority: 100
 
 detectors:
   regex:
@@ -55,16 +88,16 @@ detectors:
   # When text explicitly labels values as test/example/synthetic data,
   # the LLM pass and secret-style regex matches are skipped; structured
   # PII (SSN, credit card, phone, IBAN, email) is always redacted.
-  # Run `llmguard models pull` to download the llama-server binary and a
+  # Run `cover models pull` to download the llama-server binary and a
   # small GGUF model and populate server_path/model_path below, then set
   # enabled: true. If no prebuilt llama-server is available for your
-  # platform, or the binary/model are missing, llm-guard logs a warning and
-  # falls back to regex-only detection — this never blocks startup or
-  # request handling.
+  # platform, or the binary/model are missing, Cover logs a warning and
+  # refuses startup or the affected request if the enabled detector is
+  # unavailable. This prevents silent policy weakening.
   llm_fallback:
     enabled: false
 
-    # Set by `llmguard models pull`.
+    # Set by `cover models pull`.
     server_path: ""
     model_path: ""
 

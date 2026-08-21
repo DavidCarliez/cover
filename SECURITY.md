@@ -1,6 +1,6 @@
 # Security Policy
 
-llm-guard is a security tool — if you find a vulnerability, we want to hear
+Cover is a security tool — if you find a vulnerability, we want to hear
 about it responsibly.
 
 ## Supported Versions
@@ -40,7 +40,7 @@ Examples of in-scope reports:
 - Social engineering attacks
 - Missing detections for secret formats not yet covered (file a regular feature
   request instead, unless you can demonstrate a bypass of an existing detector)
-- Vulnerabilities in LLM providers llm-guard proxies to
+- Vulnerabilities in LLM providers Cover proxies to
 
 ## Safe Harbor
 

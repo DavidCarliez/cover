@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 func withHome(t *testing.T, home string) {
@@ -43,6 +43,9 @@ func TestDefault(t *testing.T) {
 	}
 	if cfg.Upstream != "" {
 		t.Errorf("Upstream = %q, want empty", cfg.Upstream)
+	}
+	if cfg.Mappings.SessionHeader != "X-Cover-Session" {
+		t.Errorf("Mappings.SessionHeader = %q, want X-Cover-Session", cfg.Mappings.SessionHeader)
 	}
 
 	if cfg.UpstreamTimeouts.ConnectTimeoutMS != 10000 {
@@ -225,6 +228,73 @@ func TestLoadErrors(t *testing.T) {
 			t.Errorf("error = %v, want parsing config prefix", err)
 		}
 	})
+
+	t.Run("unknown field", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), fileName)
+		if err := os.WriteFile(path, []byte("unknown_security_setting: true\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatal("expected unknown field to stop startup")
+		}
+	})
+
+	t.Run("invalid rule regex", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), fileName)
+		yaml := "rules:\n  broken:\n    pattern: '[unterminated'\n    action: redact\n"
+		if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatal("expected invalid regex to stop startup")
+		}
+	})
+
+	t.Run("invalid action", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), fileName)
+		yaml := "rules:\n  broken:\n    pattern: secret\n    action: silently_ignore\n"
+		if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatal("expected invalid action to stop startup")
+		}
+	})
+}
+
+func TestLoadDeclarativeRule(t *testing.T) {
+	path := filepath.Join(t.TempDir(), fileName)
+	yaml := `rules:
+  password:
+    pattern: '(?i)password=(?P<value>[^ ]+)'
+    category: credential
+    action: pseudonymize
+    generator: password
+    priority: 50
+    enabled: true
+    case_sensitive: false
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := cfg.Rules["password"]
+	if rule.Name != "password" || rule.Category != "credential" || rule.Action != "pseudonymize" || rule.Generator != "password" || rule.Priority != 50 {
+		t.Fatalf("unexpected rule: %+v", rule)
+	}
+}
+
+func TestExampleConfigsValidate(t *testing.T) {
+	for _, name := range []string{"config.example.yaml", "codex-router.example.yaml"} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := Load(filepath.Join("..", "..", "configs", name)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }
 
 func TestExists(t *testing.T) {

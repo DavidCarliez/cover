@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"llmguard/internal/redact"
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 func benchProxy(b *testing.B) (*Proxy, []byte) {

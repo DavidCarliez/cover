@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	labelOpenAI  = "OpenAI / Codex CLI"
-	labelClaude  = "Claude Code"
-	labelCursor  = "Cursor IDE"
-	labelUpOpenAI  = "OpenAI (api.openai.com)"
+	labelOpenAI      = "OpenAI / Codex CLI"
+	labelClaude      = "Claude Code"
+	labelCursor      = "Cursor IDE"
+	labelUpOpenAI    = "OpenAI (api.openai.com)"
 	labelUpAnthropic = "Anthropic (api.anthropic.com)"
 )
 
@@ -122,7 +122,7 @@ func promptUpstream(explicitReader io.Reader) (string, error) {
 func promptUpstreamSurvey(tty terminalIO) (string, error) {
 	var choice string
 	prompt := &survey.Select{
-		Message: "llm-guard proxies to one upstream — which should it use?",
+		Message: "Cover proxies to one upstream — which should it use?",
 		Options: []string{labelUpOpenAI, labelUpAnthropic},
 		Help:    "↑/↓ move · enter to select",
 	}
@@ -146,7 +146,7 @@ func promptUpstreamText(r io.Reader, w io.Writer) (string, error) {
 	reader := bufio.NewReader(r)
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "You selected agents that use different API providers.")
-	fmt.Fprintln(w, "llm-guard proxies to one upstream at a time — which should it use?")
+	fmt.Fprintln(w, "Cover proxies to one upstream at a time — which should it use?")
 	fmt.Fprintln(w, "  1) OpenAI    (https://api.openai.com)")
 	fmt.Fprintln(w, "  2) Anthropic (https://api.anthropic.com)")
 	fmt.Fprint(w, "Choice [1-2]: ")

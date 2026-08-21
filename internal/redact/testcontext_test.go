@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"llmguard/internal/redact/detectors"
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 func TestIsTestDataContext(t *testing.T) {
