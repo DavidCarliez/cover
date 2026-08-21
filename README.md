@@ -10,6 +10,12 @@ clients, and other HTTP-based agents. It finds secrets and personal data in
 outgoing JSON, replaces them with safe stand-ins, and restores the originals in
 the response so the agent continues to work normally.
 
+Cover is a privacy-focused fork of
+[densub/llm-guard](https://github.com/densub/llm-guard). It retains the
+upstream project's Apache 2.0 license and attribution while extending it with
+policy-driven replacement, fail-closed handling, session isolation, inspection,
+and Codex/OMP support.
+
 ## Features
 
 - Built-in detection for major API keys, tokens, private keys, JWTs, passwords,
