@@ -335,7 +335,9 @@ func (r *Redactor) transformMatches(text, session string, occupied map[string]st
 				return "", fmt.Errorf("%w: invalid rule policy", ErrUnsafeRequest)
 			}
 			var err error
-			replacement, err = r.store.Map(session, m.Value, occupied, func(attempt int) (string, error) { return generateReplacement(m.Generator, m.Value, attempt) })
+			replacement, err = r.store.Map(session, m.Value, occupied, func(attempt int) (string, error) {
+				return generateReplacement(r.store.key[:], m.Generator, m.Value, attempt)
+			})
 			if err != nil {
 				return "", fmt.Errorf("%w: generator or mapping failed", ErrUnsafeRequest)
 			}

@@ -220,6 +220,15 @@ unchanged. Key rules currently apply to JSON string values; regex rules remain
 the fallback for assignments embedded in prose, logs, commands, and tool
 output.
 
+Pseudonyms and placeholder IDs are derived with HMAC-SHA-256 using a local
+32-byte key. Cover creates `~/.config/cover/pseudonym.key` with owner-only
+permissions on first use. The same key produces stable pseudonyms across
+sessions and restarts, while separate Cover installations produce different
+values. Never commit or share this key. Back it up securely if pseudonym
+continuity matters; deleting it intentionally rotates the pseudonym namespace.
+Upgrading from an unkeyed Cover release changes existing pseudonyms once when
+this key is first created.
+
 Preview exactly what would be sent upstream without making a network request:
 
 ```sh
@@ -427,11 +436,12 @@ Data that can still leave the machine includes:
   to use this proxy.
 
 Mappings stay in memory, are separated by the configured session header, expire
-after the configured TTL, and have hard session/entry limits. They are never
-persisted by default. Default logs contain path, status, transformed count,
-matched categories, and generic errors only—not request bodies, tool arguments,
-mapping contents, original values, or restored response bodies. There is no
-unsafe raw-debug logging mode by default.
+after the configured TTL, and have hard session/entry limits. Only the random
+HMAC derivation key is persisted; it cannot restore values by itself. Default
+logs contain status, transformed count, matched categories, and generic errors
+only—not paths, queries, request bodies, tool arguments, mapping contents,
+original values, or restored response bodies. There is no unsafe raw-debug
+logging mode by default.
 
 Use TLS or a trusted local transport if the proxy and router are on different
 hosts. Authentication headers pass through unchanged and remain visible to the

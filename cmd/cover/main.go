@@ -693,10 +693,15 @@ func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, func() {}, err
 	}
+	pseudonymKey, err := config.LoadOrCreatePseudonymKey(cfg.Pseudonymization.KeyFile)
+	if err != nil {
+		return nil, func() {}, fmt.Errorf("loading pseudonym key: %w", err)
+	}
 	store := redact.NewStoreWithOptions(redact.StoreOptions{
 		MaxSessions:          cfg.Mappings.MaxSessions,
 		MaxEntriesPerSession: cfg.Mappings.MaxEntriesPerSession,
 		SessionTTL:           time.Duration(cfg.Mappings.SessionTTLMinutes) * time.Minute,
+		PseudonymKey:         pseudonymKey,
 	})
 	cleanup := func() {}
 

@@ -21,6 +21,15 @@ func policyRedactor(t *testing.T, rules ...detectors.CustomPattern) *Redactor {
 	return New(NewStore(), 0, RedactorOptions{}, d)
 }
 
+func policyRedactorWithKey(t *testing.T, key [32]byte, rules ...detectors.CustomPattern) *Redactor {
+	t.Helper()
+	d, err := detectors.NewRegexDetector(nil, rules)
+	if err != nil {
+		t.Fatalf("NewRegexDetector: %v", err)
+	}
+	return New(NewStoreWithOptions(StoreOptions{PseudonymKey: key}), 0, RedactorOptions{}, d)
+}
+
 func transformText(t *testing.T, r *Redactor, session, text string) (string, TransformResult) {
 	t.Helper()
 	body, _ := json.Marshal(map[string]string{"text": text})
@@ -67,6 +76,33 @@ func TestPseudonymGeneratorsAreReversible(t *testing.T) {
 				t.Fatalf("mapping is not stable: %q != %q", fake2, fake)
 			}
 		})
+	}
+}
+
+func TestPseudonymsAreStablePerKeyAndSeparatedAcrossKeys(t *testing.T) {
+	var keyA, keyB [32]byte
+	copy(keyA[:], []byte("installation-a-key-material-32byt"))
+	copy(keyB[:], []byte("installation-b-key-material-32byt"))
+	rule := detectors.CustomPattern{Name: "customer", Pattern: `nike`, Action: "pseudonymize", Generator: "alias"}
+
+	a1, _ := transformText(t, policyRedactorWithKey(t, keyA, rule), "one", "nike")
+	a2, _ := transformText(t, policyRedactorWithKey(t, keyA, rule), "two", "nike")
+	b, _ := transformText(t, policyRedactorWithKey(t, keyB, rule), "one", "nike")
+	if a1 != a2 {
+		t.Fatalf("same key was not stable across stores: %q != %q", a1, a2)
+	}
+	if a1 == b {
+		t.Fatalf("different installation keys produced linkable pseudonyms: %q", a1)
+	}
+}
+
+func TestPlaceholdersAreSeparatedAcrossKeys(t *testing.T) {
+	var keyA, keyB [32]byte
+	keyA[0], keyB[0] = 1, 2
+	a := NewStoreWithOptions(StoreOptions{PseudonymKey: keyA}).PlaceholderFor("admin")
+	b := NewStoreWithOptions(StoreOptions{PseudonymKey: keyB}).PlaceholderFor("admin")
+	if a == b {
+		t.Fatalf("different installation keys produced linkable placeholders: %q", a)
 	}
 }
 
@@ -165,11 +201,11 @@ func TestAllowPrioritySuppressesBlock(t *testing.T) {
 
 func TestCollisionAndDuplicateHandling(t *testing.T) {
 	const original = "10.20.30.40"
-	fake0, err := generateReplacement("ipv4", original, 0)
+	r := policyRedactor(t, detectors.CustomPattern{Name: "ip", Pattern: `\b(?:\d{1,3}\.){3}\d{1,3}\b`, Action: "pseudonymize", Generator: "ipv4"})
+	fake0, err := generateReplacement(r.store.key[:], "ipv4", original, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := policyRedactor(t, detectors.CustomPattern{Name: "ip", Pattern: `\b(?:\d{1,3}\.){3}\d{1,3}\b`, Action: "pseudonymize", Generator: "ipv4"})
 	body, _ := json.Marshal(map[string]any{"targets": []string{original, original, fake0}})
 	result, err := r.Transform(body, "s", false, "allow")
 	if err != nil {

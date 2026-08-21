@@ -1,7 +1,7 @@
 package redact
 
 import (
-	"crypto/sha256"
+	"crypto/rand"
 	"encoding/hex"
 	"fmt"
 	"sort"
@@ -24,6 +24,7 @@ type StoreOptions struct {
 	MaxEntriesPerSession int
 	SessionTTL           time.Duration
 	Now                  func() time.Time
+	PseudonymKey         [32]byte
 }
 
 type sessionMappings struct {
@@ -37,6 +38,7 @@ type Store struct {
 	mu       sync.RWMutex
 	sessions map[string]*sessionMappings
 	opts     StoreOptions
+	key      [32]byte
 }
 
 func NewStore() *Store { return NewStoreWithOptions(StoreOptions{}) }
@@ -54,7 +56,12 @@ func NewStoreWithOptions(opts StoreOptions) *Store {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	return &Store{sessions: make(map[string]*sessionMappings), opts: opts}
+	if opts.PseudonymKey == ([32]byte{}) {
+		if _, err := rand.Read(opts.PseudonymKey[:]); err != nil {
+			panic(fmt.Sprintf("generating ephemeral pseudonym key: %v", err))
+		}
+	}
+	return &Store{sessions: make(map[string]*sessionMappings), opts: opts, key: opts.PseudonymKey}
 }
 
 func normalizeSession(session string) string {
@@ -144,14 +151,14 @@ func collidesWithOccupied(candidate string, occupied map[string]struct{}) bool {
 func (s *Store) PlaceholderFor(value string) string {
 	fake, err := s.PlaceholderForSession(defaultSessionID, value, nil)
 	if err != nil {
-		return placeholderOpen + hashValue(value, 0) + placeholderClose
+		return placeholderOpen + s.hashValue(value, 0) + placeholderClose
 	}
 	return fake
 }
 
 func (s *Store) PlaceholderForSession(session, value string, occupied map[string]struct{}) (string, error) {
 	return s.Map(session, value, occupied, func(attempt int) (string, error) {
-		return placeholderOpen + hashValue(value, attempt) + placeholderClose, nil
+		return placeholderOpen + s.hashValue(value, attempt) + placeholderClose, nil
 	})
 }
 
@@ -213,8 +220,8 @@ func (s *Store) DeleteSession(session string) {
 	delete(s.sessions, normalizeSession(session))
 }
 
-func hashValue(value string, attempt int) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x00%d", value, attempt)))
+func (s *Store) hashValue(value string, attempt int) string {
+	sum := keyedDigest(s.key[:], "placeholder", value, attempt)
 	return hex.EncodeToString(sum[:])[:placeholderHashLen]
 }
 

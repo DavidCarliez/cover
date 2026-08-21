@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -44,12 +45,17 @@ func ValidateAction(action, generator string) error {
 	}
 }
 
-func digest(generator, original string, attempt int) [32]byte {
-	return sha256.Sum256([]byte(fmt.Sprintf("cover:%s:%d:%s", generator, attempt, original)))
+func keyedDigest(key []byte, domain, original string, attempt int) [32]byte {
+	mac := hmac.New(sha256.New, key)
+	_, _ = fmt.Fprintf(mac, "cover:v1:%s:%d:", domain, attempt)
+	_, _ = mac.Write([]byte(original))
+	var sum [32]byte
+	copy(sum[:], mac.Sum(nil))
+	return sum
 }
 
-func generateReplacement(generator, original string, attempt int) (string, error) {
-	h := digest(generator, original, attempt)
+func generateReplacement(key []byte, generator, original string, attempt int) (string, error) {
+	h := keyedDigest(key, "pseudonym:"+generator, original, attempt)
 	switch generator {
 	case "ipv4":
 		return fmt.Sprintf("10.%d.%d.%d", 1+int(h[0])%223, int(h[1]), 1+int(h[2])%254), nil
@@ -121,7 +127,7 @@ func generateReplacement(generator, original string, attempt int) (string, error
 				hostGen = "ipv6"
 			}
 		}
-		fakeHost, err := generateReplacement(hostGen, u.Hostname(), attempt)
+		fakeHost, err := generateReplacement(key, hostGen, u.Hostname(), attempt)
 		if err != nil {
 			return "", err
 		}

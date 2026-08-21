@@ -25,6 +25,11 @@ limits:
   response_bytes: 33554432 # 32 MiB
   sse_event_bytes: 4194304 # 4 MiB
 
+# `cover init` writes your actual home-directory path here. Cover creates this
+# HMAC key with mode 0600 on first use. Never commit or share the key.
+pseudonymization:
+  key_file: "/home/you/.config/cover/pseudonym.key"
+
 # Timeouts for the upstream LLM API hop. response_header_timeout_ms applies
 # only until the first response byte; the byte limits above remain active for
 # streaming bodies.

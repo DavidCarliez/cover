@@ -53,6 +53,10 @@ func TestDefault(t *testing.T) {
 	if cfg.Limits.RequestBytes != 16<<20 || cfg.Limits.ResponseBytes != 32<<20 || cfg.Limits.SSEEventBytes != 4<<20 {
 		t.Fatalf("unexpected default limits: %+v", cfg.Limits)
 	}
+	wantKey := filepath.Join(home, ".config", dirName, "pseudonym.key")
+	if cfg.Pseudonymization.KeyFile != wantKey {
+		t.Errorf("Pseudonymization.KeyFile = %q, want %q", cfg.Pseudonymization.KeyFile, wantKey)
+	}
 
 	if cfg.UpstreamTimeouts.ConnectTimeoutMS != 10000 {
 		t.Errorf("UpstreamTimeouts.ConnectTimeoutMS = %d, want 10000", cfg.UpstreamTimeouts.ConnectTimeoutMS)
@@ -140,6 +144,14 @@ func TestLimitValidation(t *testing.T) {
 	cfg.Limits.RequestBytes = 0
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected zero request limit to fail validation")
+	}
+}
+
+func TestPseudonymKeyPathValidation(t *testing.T) {
+	cfg := Default()
+	cfg.Pseudonymization.KeyFile = " "
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected empty pseudonym key path to fail validation")
 	}
 }
 

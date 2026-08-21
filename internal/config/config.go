@@ -24,6 +24,7 @@ type Config struct {
 	LogFile          string                             `yaml:"log_file"`
 	Network          NetworkConfig                      `yaml:"network"`
 	Limits           LimitsConfig                       `yaml:"limits"`
+	Pseudonymization PseudonymizationConfig             `yaml:"pseudonymization"`
 	UpstreamTimeouts UpstreamTimeoutsConfig             `yaml:"upstream_timeouts"`
 	Cache            CacheConfig                        `yaml:"cache"`
 	Detectors        DetectorsConfig                    `yaml:"detectors"`
@@ -40,6 +41,10 @@ type LimitsConfig struct {
 	RequestBytes  int64 `yaml:"request_bytes"`
 	ResponseBytes int64 `yaml:"response_bytes"`
 	SSEEventBytes int64 `yaml:"sse_event_bytes"`
+}
+
+type PseudonymizationConfig struct {
+	KeyFile string `yaml:"key_file"`
 }
 
 type MappingsConfig struct {
@@ -150,6 +155,7 @@ func Default() *Config {
 			ResponseBytes: 32 << 20,
 			SSEEventBytes: 4 << 20,
 		},
+		Pseudonymization: PseudonymizationConfig{KeyFile: defaultPseudonymKeyPath()},
 		UpstreamTimeouts: UpstreamTimeoutsConfig{
 			ConnectTimeoutMS:        10000,
 			ResponseHeaderTimeoutMS: 120000,
@@ -216,6 +222,14 @@ func defaultLogPath() string {
 	return filepath.Join(home, ".local", "share", dirName, logName)
 }
 
+func defaultPseudonymKeyPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".", "pseudonym.key")
+	}
+	return filepath.Join(home, ".config", dirName, "pseudonym.key")
+}
+
 // Load reads and parses the config file at path.
 func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
@@ -241,6 +255,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Limits.RequestBytes <= 0 || c.Limits.ResponseBytes <= 0 || c.Limits.SSEEventBytes <= 0 {
 		return fmt.Errorf("request, response, and SSE event byte limits must be positive")
+	}
+	if strings.TrimSpace(c.Pseudonymization.KeyFile) == "" {
+		return fmt.Errorf("pseudonymization.key_file must not be empty")
 	}
 	if c.Mappings.MaxSessions <= 0 || c.Mappings.MaxEntriesPerSession <= 0 || c.Mappings.SessionTTLMinutes <= 0 {
 		return fmt.Errorf("mapping limits and TTL must be positive")
