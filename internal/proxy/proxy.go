@@ -106,9 +106,14 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		session = fmt.Sprintf("request-%d", p.nextSession.Add(1))
 		defer p.redactor.EndSession(session)
 	}
-	result, err := p.redactor.Transform(body, session, true, p.options.MediaImages)
+	// Do not inject protocol-specific guard notes. Generic recursive rewriting
+	// must preserve the upstream request schema (Responses, Chat, Anthropic, or
+	// another OpenAI-compatible router dialect).
+	result, err := p.redactor.Transform(body, session, false, p.options.MediaImages)
 	if err != nil {
-		p.logf("status=%d error=request_transform_failed path=%s", http.StatusUnprocessableEntity, r.URL.Path)
+		// Transform errors are deliberately generic and never contain matched
+		// values, request bodies, or mapping contents.
+		p.logf("status=%d error=%v content_encoding=%s path=%s", http.StatusUnprocessableEntity, err, safeContentEncoding(r.Header.Get("Content-Encoding")), r.URL.Path)
 		http.Error(w, "request rejected: body could not be safely inspected", http.StatusUnprocessableEntity)
 		return
 	}
@@ -198,6 +203,21 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.logRequest(r.URL.Path, resp.StatusCode, result.Transformed, categories)
+}
+
+func safeContentEncoding(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "identity":
+		return "identity"
+	case "gzip":
+		return "gzip"
+	case "zstd":
+		return "zstd"
+	case "br":
+		return "br"
+	default:
+		return "other"
+	}
 }
 
 func (p *Proxy) logf(format string, args ...any) {

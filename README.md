@@ -168,6 +168,18 @@ The JSON report contains the transformed request, categories, matched rule
 names, actions, warnings, and blocked status. It never prints the reversible
 mapping or a separate list of original sensitive values.
 
+For a live sanity check, keep one terminal on the safe metadata-only log:
+
+```sh
+tail -f ~/.local/share/llmguard/redactions.log
+```
+
+Then ask Codex to echo a synthetic detector value such as
+`contact=alice@example.com`. A successful round trip logs
+`transformed=1 categories=email`; the provider receives a replacement while
+Codex displays the restored synthetic email. Use `llmguard inspect` when you
+need to view the complete transformed JSON locally without forwarding it.
+
 ## Hook it up to your agent
 
 Once the proxy is running on `127.0.0.1:8317` (the default — change via
@@ -187,6 +199,35 @@ Run `claude` as normal in the same shell/session. Every request from Claude
 Code now flows through llm-guard before reaching `api.anthropic.com`.
 
 ### Codex CLI / other OpenAI-API agents
+
+Current Codex uses the Responses API and enables zstd request compression and
+WebSockets by default. Define a user-level provider in `~/.codex/config.toml`
+that uses ordinary, uncompressed HTTP through llm-guard:
+
+```toml
+model_provider = "llmguard"
+
+[model_providers.llmguard]
+name = "llm-guard"
+base_url = "http://127.0.0.1:8317"
+wire_api = "responses"
+requires_openai_auth = true
+supports_websockets = false
+
+[features]
+enable_request_compression = false
+```
+
+If your existing config already has a `[features]` table, add the compression
+key there instead of creating a duplicate table. If the router uses an
+environment API key rather than Codex/OpenAI login, use
+`env_key = "YOUR_ROUTER_KEY_ENV_NAME"` instead of `requires_openai_auth`.
+
+Keep llm-guard's `upstream` set to the router's real base URL, including its
+`/v1` suffix when present. The Codex-facing `base_url` above should not add
+`/v1`; Codex appends the Responses path itself.
+
+For SDKs and other clients that expect an OpenAI `/v1` base URL:
 
 ```sh
 export OPENAI_BASE_URL=http://127.0.0.1:8317/v1
@@ -318,6 +359,8 @@ Data that can still leave the machine includes:
   images and image URLs; detection of every possible media encoding is not
   guaranteed;
 - non-string JSON values and encrypted/encoded text that does not match a rule;
+- compressed request bodies. They fail closed; for Codex, set
+  `features.enable_request_compression = false` as shown above;
 - data sent directly to a provider because a client was not actually configured
   to use this proxy.
 

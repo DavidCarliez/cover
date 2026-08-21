@@ -42,6 +42,23 @@ func TestProxyFailsClosedOnMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestProxyFailsClosedOnCompressedBody(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
+	defer upstream.Close()
+	p, err := New(upstream.URL, policyProxyRedactor(t), nil, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/responses", strings.NewReader("compressed bytes"))
+	req.Header.Set("Content-Encoding", "zstd")
+	rw := httptest.NewRecorder()
+	p.ServeHTTP(rw, req)
+	if rw.Code != http.StatusUnprocessableEntity || calls.Load() != 0 {
+		t.Fatalf("status=%d calls=%d", rw.Code, calls.Load())
+	}
+}
+
 func TestProxyBlockActionNeverCallsUpstream(t *testing.T) {
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
@@ -82,6 +99,9 @@ func TestProxyPseudonymizesAndRestoresToolArguments(t *testing.T) {
 	clientBody, _ := io.ReadAll(resp.Body)
 	if bytes.Contains(upstreamBody, []byte(original)) {
 		t.Fatalf("upstream received original: %s", upstreamBody)
+	}
+	if bytes.Contains(upstreamBody, []byte(`"system"`)) {
+		t.Fatalf("proxy injected a protocol-specific system field: %s", upstreamBody)
 	}
 	if !bytes.Contains(clientBody, []byte(original)) {
 		t.Fatalf("client did not receive restored target: %s", clientBody)
