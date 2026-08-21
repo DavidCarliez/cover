@@ -30,6 +30,8 @@ and Codex/OMP support.
 - Fail-closed handling for malformed JSON, compressed bodies, invalid policy,
   mapping exhaustion, detector failure, and explicit block rules.
 - `cover inspect` for previewing the exact protected JSON without sending it.
+- `cover doctor` for local policy, daemon, key, listener, and Codex routing checks.
+- `cover monitor` for a live, allowlisted metadata view with no prompt content.
 - Safe metadata-only audit logs with no raw prompt or response bodies.
 - Configurable image policy (`allow`, `warn`, or `block`).
 - Optional local llama.cpp detector for sensitive free-form text that regular
@@ -151,6 +153,8 @@ cover start            # foreground
 cover start --detach   # background; logs to ~/.local/share/cover/daemon.log
 cover restart          # stop (if running) and start in background
 cover status
+cover doctor           # verify policy, daemon, and Codex routing
+cover monitor          # watch safe request metadata; Ctrl-C to stop
 cover stop
 ```
 
@@ -180,6 +184,39 @@ cover test
 
 Runs a built-in sample payload containing fake secrets through the redactor
 (no network calls) and prints what gets redacted and restored.
+
+### Diagnose and monitor
+
+```sh
+cover doctor
+cover doctor --json
+```
+
+`cover doctor` validates the configuration, loopback policy, memory limits,
+private HMAC key, redaction/restoration round trip, upstream-loop protection,
+daemon, local fail-closed behavior, audit-log permissions, API-base environment
+variables, and the selected user-level Codex provider. It also verifies that
+Codex request compression is disabled so Cover can inspect the body. The live
+probe is deliberately malformed and rejected locally; Doctor does not contact
+the configured upstream or spend model tokens.
+
+The Codex checks follow the official
+[Codex configuration reference](https://developers.openai.com/codex/config-reference/):
+provider routing belongs in the user-level `~/.codex/config.toml`, using
+`model_provider` and the matching `model_providers.<id>.base_url`.
+
+```sh
+cover monitor                         # recent events, then follow
+cover monitor --follow=false -n 50   # print the last 50 and exit
+cover monitor --json                  # newline-delimited JSON
+```
+
+Monitor shows only allowlisted metadata: time, HTTP status, transformation
+count, bytes sent upstream, bytes returned locally, latency, matched categories,
+and a generic error label. It reconstructs each event instead of printing raw
+log lines, so unknown fields—including any historical path or query fields—are
+discarded. Older events created before byte metrics were added display `-` for
+those columns.
 
 ### Define and test privacy rules
 
@@ -438,10 +475,10 @@ Data that can still leave the machine includes:
 Mappings stay in memory, are separated by the configured session header, expire
 after the configured TTL, and have hard session/entry limits. Only the random
 HMAC derivation key is persisted; it cannot restore values by itself. Default
-logs contain status, transformed count, matched categories, and generic errors
-only—not paths, queries, request bodies, tool arguments, mapping contents,
-original values, or restored response bodies. There is no unsafe raw-debug
-logging mode by default.
+logs contain status, transformed count, byte counts, latency, matched
+categories, and generic errors only—not paths, queries, request bodies, tool
+arguments, mapping contents, original values, or restored response bodies.
+There is no unsafe raw-debug logging mode by default.
 
 Use TLS or a trusted local transport if the proxy and router are on different
 hosts. Authentication headers pass through unchanged and remain visible to the

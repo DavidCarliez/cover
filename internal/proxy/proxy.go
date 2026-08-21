@@ -103,6 +103,7 @@ func New(upstream string, redactor *redact.Redactor, logger *log.Logger, opts Op
 
 // ServeHTTP implements http.Handler.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	started := time.Now()
 	defer r.Body.Close()
 	body, err := readAtMost(r.Body, p.options.MaxRequestBytes)
 	if err != nil {
@@ -140,7 +141,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if result.Blocked {
-		p.logRequest(http.StatusForbidden, result.Transformed, result.Categories)
+		p.logRequest(http.StatusForbidden, result.Transformed, result.Categories, 0, 0, time.Since(started))
 		http.Error(w, "request blocked by local privacy policy", http.StatusForbidden)
 		return
 	}
@@ -179,6 +180,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	ct := resp.Header.Get("Content-Type")
 	streaming := strings.Contains(ct, "text/event-stream") || resp.Header.Get("Transfer-Encoding") == "chunked"
+	responseBytes := 0
 	if streaming {
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
@@ -186,16 +188,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			io.Writer
 			Close() error
 		}
+		counted := &countingWriter{w: w}
 		if strings.Contains(ct, "text/event-stream") {
-			rw = NewSSERestoringWriterForSessionWithLimit(w, p.redactor, session, p.options.MaxSSEEventBytes)
+			rw = NewSSERestoringWriterForSessionWithLimit(counted, p.redactor, session, p.options.MaxSSEEventBytes)
 		} else {
-			rw = NewRestoringWriterForSession(w, p.redactor, session)
+			rw = NewRestoringWriterForSession(counted, p.redactor, session)
 		}
 		if _, err := io.Copy(rw, &cappedReader{r: resp.Body, remaining: p.options.MaxResponseBytes}); err != nil {
 			p.logf("streaming upstream response: %v", err)
 		} else if err := rw.Close(); err != nil {
 			p.logf("closing streaming response: %v", err)
 		}
+		responseBytes = counted.n
 	} else {
 		respBody, err := readAtMost(resp.Body, p.options.MaxResponseBytes)
 		if err != nil {
@@ -210,17 +214,32 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
-		if _, err := w.Write(p.redactor.RestoreResponseForSession(respBody, ct, session)); err != nil {
+		if n, err := w.Write(p.redactor.RestoreResponseForSession(respBody, ct, session)); err != nil {
 			p.logf("writing response body: %v", err)
-		}
-		// Error response bodies are generic API error messages (no user
-		// secrets), so logging them helps diagnose upstream rejections.
-		if resp.StatusCode >= 400 {
-			p.logErrorResponse(resp.StatusCode, resp.Header)
+			responseBytes = n
+		} else {
+			responseBytes = n
 		}
 	}
 
-	p.logRequest(resp.StatusCode, result.Transformed, categories)
+	p.logRequest(resp.StatusCode, result.Transformed, categories, len(redactedBody), responseBytes, time.Since(started))
+}
+
+type countingWriter struct {
+	w io.Writer
+	n int
+}
+
+func (w *countingWriter) Write(p []byte) (int, error) {
+	n, err := w.w.Write(p)
+	w.n += n
+	return n, err
+}
+
+func (w *countingWriter) Flush() {
+	if flusher, ok := w.w.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }
 
 type cappedReader struct {
@@ -282,30 +301,16 @@ func (p *Proxy) logf(format string, args ...any) {
 	}
 }
 
-func (p *Proxy) logErrorResponse(status int, header http.Header) {
+func (p *Proxy) logRequest(status, transformed int, categories []string, sentBytes, returnedBytes int, duration time.Duration) {
 	if p.logger == nil {
 		return
 	}
-	var rl []string
-	for k, vv := range header {
-		lk := strings.ToLower(k)
-		if strings.HasPrefix(lk, "anthropic-ratelimit") || lk == "retry-after" || lk == "request-id" {
-			rl = append(rl, k+"="+strings.Join(vv, ","))
-		}
-	}
-	sort.Strings(rl)
-	p.logger.Printf("upstream error status=%d %s", status, strings.Join(rl, " "))
-}
-
-func (p *Proxy) logRequest(status, transformed int, categories []string) {
-	if p.logger == nil {
-		return
-	}
+	fields := fmt.Sprintf("status=%d transformed=%d sent_bytes=%d returned_bytes=%d duration_ms=%d", status, transformed, sentBytes, returnedBytes, duration.Milliseconds())
 	if len(categories) == 0 {
-		p.logger.Printf("status=%d transformed=%d", status, transformed)
+		p.logger.Print(fields)
 		return
 	}
-	p.logger.Printf("status=%d transformed=%d categories=%s", status, transformed, strings.Join(uniqueSorted(categories), ","))
+	p.logger.Printf("%s categories=%s", fields, strings.Join(uniqueSorted(categories), ","))
 }
 
 func singleJoiningSlash(a, b string) string {

@@ -48,7 +48,7 @@ func main() {
 			"in the response.",
 	}
 
-	root.AddCommand(installCmd(), envCmd(), initCmd(), startCmd(), stopCmd(), restartCmd(), statusCmd(), testCmd(), inspectCmd(), modelsCmd())
+	root.AddCommand(installCmd(), envCmd(), initCmd(), startCmd(), stopCmd(), restartCmd(), statusCmd(), doctorCmd(), monitorCmd(), testCmd(), inspectCmd(), modelsCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)

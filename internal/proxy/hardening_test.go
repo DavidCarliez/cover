@@ -185,6 +185,7 @@ func TestDefaultLogsNeverContainBodiesOrMappings(t *testing.T) {
 	const secret = "API_RESPONSE_SECRET"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Request-ID", "request-id-secret")
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":"API_RESPONSE_SECRET"}`))
 	}))
@@ -193,11 +194,16 @@ func TestDefaultLogsNeverContainBodiesOrMappings(t *testing.T) {
 	p, _ := New(upstream.URL, policyProxyRedactor(t), log.New(&logs, "", 0), Options{})
 	rw := httptest.NewRecorder()
 	p.ServeHTTP(rw, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":"hello"}`)))
-	if strings.Contains(logs.String(), secret) || strings.Contains(logs.String(), `{"input"`) {
+	if strings.Contains(logs.String(), secret) || strings.Contains(logs.String(), "request-id-secret") || strings.Contains(logs.String(), `{"input"`) {
 		t.Fatalf("log exposed a body: %q", logs.String())
 	}
 	if !strings.Contains(logs.String(), "status=400") {
 		t.Fatalf("log omitted status: %q", logs.String())
+	}
+	for _, field := range []string{"sent_bytes=", "returned_bytes=", "duration_ms="} {
+		if !strings.Contains(logs.String(), field) {
+			t.Fatalf("log omitted safe activity metric %q: %q", field, logs.String())
+		}
 	}
 }
 
