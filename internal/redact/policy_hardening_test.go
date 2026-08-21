@@ -70,6 +70,61 @@ func TestPseudonymGeneratorsAreReversible(t *testing.T) {
 	}
 }
 
+func TestFieldRulePseudonymizesPasswordValuesByJSONKey(t *testing.T) {
+	r := New(NewStore(), 0, RedactorOptions{FieldRules: []FieldRule{{
+		Name:      "password_fields",
+		Keys:      []string{"password", "passwd", "pwd", "passphrase"},
+		Category:  "password",
+		Action:    "pseudonymize",
+		Generator: "password",
+		Priority:  220,
+	}}})
+	payload := []byte(`{"password":"admin","nested":{"PWD":"x","passphrase":"correct horse battery staple"},"username":"admin","password_hint":"admin"}`)
+	result, err := r.Transform(payload, "password-session", false, "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Transformed != 3 {
+		t.Fatalf("Transformed=%d, want 3: %s", result.Transformed, result.Body)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(result.Body, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["password"] == "admin" || got["username"] != "admin" || got["password_hint"] != "admin" {
+		t.Fatalf("unexpected top-level transformation: %#v", got)
+	}
+	nested := got["nested"].(map[string]any)
+	if nested["PWD"] == "x" || nested["passphrase"] == "correct horse battery staple" {
+		t.Fatalf("nested password fields were not transformed: %#v", nested)
+	}
+	restored := r.RestoreResponseForSession(result.Body, "application/json", "password-session")
+	var want, roundTrip any
+	if err := json.Unmarshal(payload, &want); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(restored, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(roundTrip) != fmt.Sprint(want) {
+		t.Fatalf("restore mismatch\nwant=%v\ngot=%v", want, roundTrip)
+	}
+}
+
+func TestFieldRulePriorityAndCaseSensitivity(t *testing.T) {
+	r := New(NewStore(), 0, RedactorOptions{FieldRules: []FieldRule{
+		{Name: "lower", Keys: []string{"password"}, Action: "block", Priority: 10, CaseSensitive: true},
+		{Name: "fallback", Keys: []string{"password"}, Action: "pseudonymize", Generator: "password", Priority: 1},
+	}})
+	result, err := r.Transform([]byte(`{"password":"one","PASSWORD":"two"}`), "s", false, "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Blocked || result.Transformed != 2 {
+		t.Fatalf("unexpected field-rule result: %+v %s", result, result.Body)
+	}
+}
+
 func TestNamedCaptureAndActions(t *testing.T) {
 	rules := []detectors.CustomPattern{
 		{Name: "password", Pattern: `password=(?P<value>[^\s]+)`, Category: "credential", Action: "pseudonymize", Generator: "password", Priority: 10},

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -225,6 +226,9 @@ func (c *Config) Validate() error {
 	}
 	rules := make([]detectors.CustomPattern, 0, len(c.Rules)+len(c.Detectors.Regex.CustomPatterns))
 	for _, rule := range c.Detectors.Regex.CustomPatterns {
+		if err := validateRuleKeys(rule.Name, rule); err != nil {
+			return err
+		}
 		if rule.Action != "" {
 			if err := redact.ValidateAction(rule.Action, rule.Generator); err != nil {
 				return fmt.Errorf("custom pattern %q: %w", rule.Name, err)
@@ -234,6 +238,9 @@ func (c *Config) Validate() error {
 	}
 	for name, rule := range c.Rules {
 		rule.Name = name
+		if err := validateRuleKeys(name, rule); err != nil {
+			return err
+		}
 		if rule.Category == "" {
 			rule.Category = name
 		}
@@ -248,6 +255,21 @@ func (c *Config) Validate() error {
 	}
 	if _, err := detectors.NewRegexDetector(c.Detectors.Regex.BuiltinCategories, rules); err != nil {
 		return err
+	}
+	return nil
+}
+
+func validateRuleKeys(name string, rule detectors.CustomPattern) error {
+	if len(rule.Keys) == 0 {
+		return nil
+	}
+	if rule.Pattern != "" || rule.Detector != "" {
+		return fmt.Errorf("rule %q cannot combine keys with pattern or detector", name)
+	}
+	for _, key := range rule.Keys {
+		if strings.TrimSpace(key) == "" {
+			return fmt.Errorf("rule %q contains an empty key", name)
+		}
 	}
 	return nil
 }

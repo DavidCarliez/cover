@@ -287,6 +287,47 @@ func TestLoadDeclarativeRule(t *testing.T) {
 	}
 }
 
+func TestLoadKeyAwareRule(t *testing.T) {
+	path := filepath.Join(t.TempDir(), fileName)
+	yaml := `rules:
+  password_fields:
+    keys: [password, passwd, pwd, passphrase]
+    category: password
+    action: pseudonymize
+    generator: password
+    priority: 220
+`
+	if err := os.WriteFile(path, []byte(yaml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := cfg.Rules["password_fields"]
+	if len(rule.Keys) != 4 || rule.Keys[0] != "password" || rule.Action != "pseudonymize" || rule.Generator != "password" {
+		t.Fatalf("unexpected key-aware rule: %+v", rule)
+	}
+}
+
+func TestKeyAwareRuleValidation(t *testing.T) {
+	tests := map[string]string{
+		"empty key":       "rules:\n  bad:\n    keys: [password, '']\n    action: pseudonymize\n    generator: password\n",
+		"mixed selectors": "rules:\n  bad:\n    keys: [password]\n    pattern: secret\n    action: pseudonymize\n    generator: password\n",
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), fileName)
+			if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(path); err == nil {
+				t.Fatal("expected invalid key-aware rule to fail validation")
+			}
+		})
+	}
+}
+
 func TestExampleConfigsValidate(t *testing.T) {
 	for _, name := range []string{"config.example.yaml", "codex-router.example.yaml"} {
 		t.Run(name, func(t *testing.T) {

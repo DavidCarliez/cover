@@ -698,12 +698,18 @@ func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
 	cleanup := func() {}
 
 	var dets []detectors.Detector
+	var fieldRules []redact.FieldRule
 	if cfg.Detectors.Regex.Enabled || len(cfg.Rules) > 0 {
 		var categories []string
 		var custom []detectors.CustomPattern
 		if cfg.Detectors.Regex.Enabled {
 			categories = cfg.Detectors.Regex.BuiltinCategories
 			custom = append(custom, cfg.Detectors.Regex.CustomPatterns...)
+			for _, rule := range cfg.Detectors.Regex.CustomPatterns {
+				if fieldRule, ok := makeFieldRule(rule); ok {
+					fieldRules = append(fieldRules, fieldRule)
+				}
+			}
 		}
 		names := make([]string, 0, len(cfg.Rules))
 		for name := range cfg.Rules {
@@ -714,6 +720,9 @@ func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
 			rule := cfg.Rules[name]
 			rule.Name = name
 			custom = append(custom, rule)
+			if fieldRule, ok := makeFieldRule(rule); ok {
+				fieldRules = append(fieldRules, fieldRule)
+			}
 		}
 		rd, err := detectors.NewRegexDetector(categories, custom)
 		if err != nil {
@@ -727,6 +736,7 @@ func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
 		SkipLLMIfRegexMatched: cfg.Detectors.LLMFallback.SkipIfRegexMatched,
 		LLMConcurrency:        cfg.Detectors.LLMFallback.Concurrency,
 		LLMBatchSize:          cfg.Detectors.LLMFallback.BatchSize,
+		FieldRules:            fieldRules,
 	}
 	if cfg.Cache.Enabled {
 		opts.Cache = redact.NewDetectionCache(cfg.Cache.MaxEntries)
@@ -743,6 +753,33 @@ func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
 	}
 
 	return redact.New(store, llmBudget, opts, dets...), cleanup, nil
+}
+
+func makeFieldRule(rule detectors.CustomPattern) (redact.FieldRule, bool) {
+	if len(rule.Keys) == 0 || (rule.Enabled != nil && !*rule.Enabled) {
+		return redact.FieldRule{}, false
+	}
+	action := rule.Action
+	if action == "" {
+		action = string(redact.ActionPlaceholder)
+	}
+	category := rule.Category
+	if category == "" {
+		category = rule.Name
+	}
+	caseSensitive := false
+	if rule.CaseSensitive != nil {
+		caseSensitive = *rule.CaseSensitive
+	}
+	return redact.FieldRule{
+		Name:          rule.Name,
+		Keys:          append([]string(nil), rule.Keys...),
+		Category:      category,
+		Action:        action,
+		Generator:     rule.Generator,
+		Priority:      rule.Priority,
+		CaseSensitive: caseSensitive,
+	}, true
 }
 
 // startLLMFallback attempts to start the local llama-server subprocess and

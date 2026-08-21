@@ -33,16 +33,17 @@ type Detector interface {
 
 // CustomPattern is a user-supplied regex pattern loaded from config.
 type CustomPattern struct {
-	Name          string `yaml:"name,omitempty"`
-	Detector      string `yaml:"detector,omitempty"`
-	Pattern       string `yaml:"pattern,omitempty"`
-	Category      string `yaml:"category,omitempty"`
-	Action        string `yaml:"action,omitempty"`
-	Generator     string `yaml:"generator,omitempty"`
-	Priority      int    `yaml:"priority,omitempty"`
-	Enabled       *bool  `yaml:"enabled,omitempty"`
-	CaseSensitive *bool  `yaml:"case_sensitive,omitempty"`
-	CaptureGroup  string `yaml:"capture_group,omitempty"`
+	Name          string   `yaml:"name,omitempty"`
+	Detector      string   `yaml:"detector,omitempty"`
+	Pattern       string   `yaml:"pattern,omitempty"`
+	Keys          []string `yaml:"keys,omitempty"`
+	Category      string   `yaml:"category,omitempty"`
+	Action        string   `yaml:"action,omitempty"`
+	Generator     string   `yaml:"generator,omitempty"`
+	Priority      int      `yaml:"priority,omitempty"`
+	Enabled       *bool    `yaml:"enabled,omitempty"`
+	CaseSensitive *bool    `yaml:"case_sensitive,omitempty"`
+	CaptureGroup  string   `yaml:"capture_group,omitempty"`
 }
 
 // builtinPatterns maps a category name to the regex used to detect it.
@@ -169,6 +170,12 @@ func NewRegexDetector(categories []string, custom []CustomPattern) (*RegexDetect
 
 	for _, c := range custom {
 		if c.Enabled != nil && !*c.Enabled {
+			continue
+		}
+		if len(c.Keys) > 0 {
+			if c.Pattern != "" || c.Detector != "" {
+				return nil, fmt.Errorf("custom rule %q cannot combine keys with pattern or detector", c.Name)
+			}
 			continue
 		}
 		pattern := c.Pattern

@@ -35,6 +35,7 @@ type RedactorOptions struct {
 	SkipLLMIfRegexMatched bool
 	LLMConcurrency        int
 	LLMBatchSize          int
+	FieldRules            []FieldRule
 }
 
 // Redactor scans and rewrites request/response bodies using a set of
@@ -47,6 +48,7 @@ type Redactor struct {
 	skipLLMIfRegexMatched bool
 	llmConcurrency        int
 	llmBatchSize          int
+	fieldRules            []FieldRule
 }
 
 // New creates a Redactor backed by store, applying the given detectors in
@@ -60,6 +62,13 @@ func New(store *Store, llmBudget time.Duration, opts RedactorOptions, dets ...de
 	if opts.LLMBatchSize <= 0 {
 		opts.LLMBatchSize = 8
 	}
+	fieldRules := append([]FieldRule(nil), opts.FieldRules...)
+	sort.SliceStable(fieldRules, func(i, j int) bool {
+		if fieldRules[i].Priority != fieldRules[j].Priority {
+			return fieldRules[i].Priority > fieldRules[j].Priority
+		}
+		return fieldRules[i].Name < fieldRules[j].Name
+	})
 	return &Redactor{
 		detectors:             dets,
 		store:                 store,
@@ -68,6 +77,7 @@ func New(store *Store, llmBudget time.Duration, opts RedactorOptions, dets ...de
 		skipLLMIfRegexMatched: opts.SkipLLMIfRegexMatched,
 		llmConcurrency:        opts.LLMConcurrency,
 		llmBatchSize:          opts.LLMBatchSize,
+		fieldRules:            fieldRules,
 	}
 }
 

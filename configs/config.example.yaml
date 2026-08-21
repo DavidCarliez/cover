@@ -37,9 +37,17 @@ mappings:
 media:
   images: allow # allow, warn, or block
 
-# Declarative policy rules. A rule can use pattern or detector: builtin_<type>.
+# Declarative policy rules. A rule selects data with pattern,
+# detector: builtin_<type>, or a list of JSON object keys. Key matching is
+# case-insensitive by default and applies to the entire string value.
 # Actions: pseudonymize, placeholder, mask, redact, block, allow.
 rules:
+  password_fields:
+    keys: [password, passwd, pwd, passphrase, user_password, database_password]
+    category: password
+    action: pseudonymize
+    generator: password
+    priority: 220
   internal_ipv4:
     detector: builtin_ipv4
     action: pseudonymize

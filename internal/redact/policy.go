@@ -34,6 +34,19 @@ type TransformResult struct {
 	Warnings    []string      `json:"warnings,omitempty"`
 }
 
+// FieldRule applies a policy to an entire JSON string value when its object
+// key matches one of Keys. Key matching is case-insensitive unless
+// CaseSensitive is true.
+type FieldRule struct {
+	Name          string
+	Keys          []string
+	Category      string
+	Action        string
+	Generator     string
+	Priority      int
+	CaseSensitive bool
+}
+
 type ErrorDetector interface {
 	DetectE(text string) ([]detectors.Match, error)
 }
@@ -158,6 +171,16 @@ func (r *Redactor) walkPolicy(ctx context.Context, v any, session string, path [
 			if excludedProtocolField(val, path, k) {
 				continue
 			}
+			if text, ok := vv.(string); ok {
+				if rule, matched := r.fieldRule(k); matched {
+					nv, err := r.transformFieldString(text, session, occupied, result, changed, rule)
+					if err != nil {
+						return nil, err
+					}
+					val[k] = nv
+					continue
+				}
+			}
 			nv, err := r.walkPolicy(ctx, vv, session, append(path, k), occupied, result, changed)
 			if err != nil {
 				return nil, err
@@ -177,6 +200,23 @@ func (r *Redactor) walkPolicy(ctx context.Context, v any, session string, path [
 	default:
 		return v, nil
 	}
+}
+
+func (r *Redactor) fieldRule(key string) (FieldRule, bool) {
+	for _, rule := range r.fieldRules {
+		for _, candidate := range rule.Keys {
+			if rule.CaseSensitive {
+				if key == candidate {
+					return rule, true
+				}
+				continue
+			}
+			if strings.EqualFold(key, candidate) {
+				return rule, true
+			}
+		}
+	}
+	return FieldRule{}, false
 }
 
 func safeDetect(ctx context.Context, det detectors.Detector, text string) (matches []detectors.Match, err error) {
@@ -237,15 +277,39 @@ func (r *Redactor) transformString(ctx context.Context, text, session string, oc
 		}
 		all = append(all, matches...)
 	}
-	for _, m := range all {
+	return r.transformMatches(text, session, occupied, result, changed, all)
+}
+
+func (r *Redactor) transformFieldString(text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, rule FieldRule) (string, error) {
+	if text == "" {
+		return text, nil
+	}
+	category := rule.Category
+	if category == "" {
+		category = rule.Name
+	}
+	return r.transformMatches(text, session, occupied, result, changed, []detectors.Match{{
+		Category:  category,
+		Value:     text,
+		Start:     0,
+		End:       len(text),
+		Rule:      rule.Name,
+		Action:    rule.Action,
+		Generator: rule.Generator,
+		Priority:  rule.Priority,
+	}})
+}
+
+func (r *Redactor) transformMatches(text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, matches []detectors.Match) (string, error) {
+	for _, m := range matches {
 		if m.Start < 0 || m.End <= m.Start || m.End > len(text) || text[m.Start:m.End] != m.Value {
 			return "", fmt.Errorf("%w: detector returned invalid span", ErrUnsafeRequest)
 		}
 	}
-	if len(all) == 0 {
+	if len(matches) == 0 {
 		return text, nil
 	}
-	selected := selectNonOverlapping(all)
+	selected := selectNonOverlapping(matches)
 	var b strings.Builder
 	last := 0
 	for _, m := range selected {

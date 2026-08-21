@@ -95,3 +95,12 @@ func TestNewRegexDetector_CustomPattern(t *testing.T) {
 		t.Fatalf("unexpected matches: %+v", matches)
 	}
 }
+
+func TestNewRegexDetector_KeyOnlyRule(t *testing.T) {
+	if _, err := NewRegexDetector(nil, []CustomPattern{{Name: "password_fields", Keys: []string{"password"}, Action: "pseudonymize", Generator: "password"}}); err != nil {
+		t.Fatalf("key-only rule should be handled outside the regex detector: %v", err)
+	}
+	if _, err := NewRegexDetector(nil, []CustomPattern{{Name: "mixed", Keys: []string{"password"}, Pattern: "secret"}}); err == nil {
+		t.Fatal("expected keys combined with pattern to fail")
+	}
+}

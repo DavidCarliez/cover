@@ -163,14 +163,22 @@ Runs a built-in sample payload containing fake secrets through the redactor
 
 ### Define and test privacy rules
 
-Top-level `rules` are declarative and validated at startup. Each rule supports
-`pattern` or a `builtin_*` detector, `category`, `priority`, `action`,
-`generator`, `enabled`, `case_sensitive`, and `capture_group`. If a regular
-expression contains `(?P<value>...)`, only that captured value is transformed.
-Invalid regexes, actions, generators, or capture groups stop startup.
+Top-level `rules` are declarative and validated at startup. Each rule selects
+data using `pattern`, a `builtin_*` detector, or a list of JSON object `keys`.
+Rules also support `category`, `priority`, `action`, `generator`, `enabled`,
+`case_sensitive`, and `capture_group`. Key rules apply to the entire string
+value and match keys case-insensitively by default. If a regular expression
+contains `(?P<value>...)`, only that captured value is transformed. Invalid
+selectors, regexes, actions, generators, or capture groups stop startup.
 
 ```yaml
 rules:
+  password_fields:
+    keys: [password, passwd, pwd, passphrase, user_password, database_password]
+    category: password
+    action: pseudonymize
+    generator: password
+    priority: 220
   internal_ip:
     detector: builtin_ipv4
     action: pseudonymize
@@ -184,6 +192,13 @@ rules:
     action: block
     priority: 100
 ```
+
+Key-aware rules protect short and ordinary values that cannot safely be
+identified by shape alone. For example, `{"password":"admin"}` pseudonymizes
+the complete `admin` value while leaving an unrelated `{"username":"admin"}`
+unchanged. Key rules currently apply to JSON string values; regex rules remain
+the fallback for assignments embedded in prose, logs, commands, and tool
+output.
 
 Preview exactly what would be sent upstream without making a network request:
 
