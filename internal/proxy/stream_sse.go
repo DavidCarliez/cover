@@ -14,13 +14,18 @@ type SSERestoringWriter struct {
 	w        io.Writer
 	flusher  http.Flusher
 	redactor *redact.Redactor
+	session  string
 	buf      []byte
 }
 
 // NewSSERestoringWriter wraps w for text/event-stream responses.
 func NewSSERestoringWriter(w io.Writer, redactor *redact.Redactor) *SSERestoringWriter {
+	return NewSSERestoringWriterForSession(w, redactor, "")
+}
+
+func NewSSERestoringWriterForSession(w io.Writer, redactor *redact.Redactor, session string) *SSERestoringWriter {
 	f, _ := w.(http.Flusher)
-	return &SSERestoringWriter{w: w, flusher: f, redactor: redactor}
+	return &SSERestoringWriter{w: w, flusher: f, redactor: redactor, session: session}
 }
 
 // Write implements io.Writer.
@@ -33,7 +38,7 @@ func (rw *SSERestoringWriter) Write(p []byte) (int, error) {
 		}
 		event := rw.buf[:idx+2]
 		rw.buf = rw.buf[idx+2:]
-		restored := rw.redactor.RestoreSSEEvent(event)
+		restored := rw.redactor.RestoreSSEEventForSession(event, rw.session)
 		if _, err := rw.w.Write(restored); err != nil {
 			return 0, err
 		}
@@ -47,7 +52,7 @@ func (rw *SSERestoringWriter) Write(p []byte) (int, error) {
 // Close flushes any buffered partial event.
 func (rw *SSERestoringWriter) Close() error {
 	if len(rw.buf) > 0 {
-		restored := rw.redactor.RestoreSSEEvent(rw.buf)
+		restored := rw.redactor.RestoreSSEEventForSession(rw.buf, rw.session)
 		if _, err := rw.w.Write(restored); err != nil {
 			return err
 		}

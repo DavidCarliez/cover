@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
 # One-command installer for llm-guard.
 #
-#   curl -fsSL https://raw.githubusercontent.com/densub/llm-guard/main/scripts/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/DavidCarliez/llm-guard/main/scripts/install.sh | bash
 #
 # Environment overrides:
-#   LLM_GUARD_REPO    git remote (default: https://github.com/densub/llm-guard.git)
+#   LLM_GUARD_REPO    git remote (default: https://github.com/DavidCarliez/llm-guard.git)
 #   LLM_GUARD_BRANCH  branch to clone (default: main)
 #   LLM_GUARD_BIN_DIR install directory (default: ~/.local/bin)
 #   LLM_GUARD_AGENTS  non-interactive agent list, e.g. openai,claude,cursor
 
 set -euo pipefail
 
-REPO="${LLM_GUARD_REPO:-https://github.com/densub/llm-guard.git}"
+REPO="${LLM_GUARD_REPO:-https://github.com/DavidCarliez/llm-guard.git}"
 BRANCH="${LLM_GUARD_BRANCH:-main}"
 BIN_DIR="${LLM_GUARD_BIN_DIR:-${HOME}/.local/bin}"
 

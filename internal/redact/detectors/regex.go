@@ -6,6 +6,7 @@ package detectors
 
 import (
 	"fmt"
+	"net"
 	"regexp"
 	"sort"
 	"strings"
@@ -14,10 +15,14 @@ import (
 
 // Match represents a single detected sensitive substring within a piece of text.
 type Match struct {
-	Category string
-	Value    string
-	Start    int
-	End      int
+	Category  string
+	Value     string
+	Start     int
+	End       int
+	Rule      string
+	Action    string
+	Generator string
+	Priority  int
 }
 
 // Detector finds sensitive substrings within a block of text.
@@ -28,8 +33,16 @@ type Detector interface {
 
 // CustomPattern is a user-supplied regex pattern loaded from config.
 type CustomPattern struct {
-	Name    string `yaml:"name"`
-	Pattern string `yaml:"pattern"`
+	Name          string `yaml:"name,omitempty"`
+	Detector      string `yaml:"detector,omitempty"`
+	Pattern       string `yaml:"pattern,omitempty"`
+	Category      string `yaml:"category,omitempty"`
+	Action        string `yaml:"action,omitempty"`
+	Generator     string `yaml:"generator,omitempty"`
+	Priority      int    `yaml:"priority,omitempty"`
+	Enabled       *bool  `yaml:"enabled,omitempty"`
+	CaseSensitive *bool  `yaml:"case_sensitive,omitempty"`
+	CaptureGroup  string `yaml:"capture_group,omitempty"`
 }
 
 // builtinPatterns maps a category name to the regex used to detect it.
@@ -49,17 +62,27 @@ var builtinPatterns = map[string]string{
 	"jwt":                        `eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`,
 	"generic_api_key_assignment": `(?i)(api[_-]?key(?:_\w+)*|secret|token|password|passwd|pwd)\s*[=:]\s*['"]?[A-Za-z0-9_\-/+=]{8,}['"]?`,
 	"email":                      `[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`,
-	"ssn": `\b\d{3}[-\s]\d{2}[-\s]\d{4}\b`,
-	"credit_card": `\b(?:4[0-9]{3}[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}|5[1-5][0-9]{2}[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}|3[47][0-9]{2}[-\s]?[0-9]{6}[-\s]?[0-9]{5}|6(?:011|5[0-9]{2})[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4})\b`,
-	"phone_us":   `(?:\+?1[-.\s]?)?(?:\([2-9]\d{2}\)[-.\s]*|\b[2-9]\d{2}[-.\s]+)\d{3}[-.\s]+\d{4}\b`,
-	"phone_intl": `\+[1-9]\d{6,14}\b`,
-	"iban":       `\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`,
+	"ssn":                        `\b\d{3}[-\s]\d{2}[-\s]\d{4}\b`,
+	"credit_card":                `\b(?:4[0-9]{3}[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}|5[1-5][0-9]{2}[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4}|3[47][0-9]{2}[-\s]?[0-9]{6}[-\s]?[0-9]{5}|6(?:011|5[0-9]{2})[-\s]?[0-9]{4}[-\s]?[0-9]{4}[-\s]?[0-9]{4})\b`,
+	"phone_us":                   `(?:\+?1[-.\s]?)?(?:\([2-9]\d{2}\)[-.\s]*|\b[2-9]\d{2}[-.\s]+)\d{3}[-.\s]+\d{4}\b`,
+	"phone_intl":                 `\+[1-9]\d{6,14}\b`,
+	"iban":                       `\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`,
+	"ipv4":                       `\b(?:\d{1,3}\.){3}\d{1,3}\b`,
+	"ipv6":                       `\b[0-9A-Fa-f:]{2,39}\b`,
+	"hostname":                   `\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\b`,
+	"domain":                     `\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}\b`,
+	"uuid":                       `\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b`,
+	"url":                        `https?://[^\s<>"']+`,
 }
 
 // BuiltinCategories returns the names of all available built-in categories.
 func BuiltinCategories() []string {
 	cats := make([]string, 0, len(builtinPatterns))
 	for c := range builtinPatterns {
+		switch c {
+		case "ipv4", "ipv6", "hostname", "domain", "uuid", "url":
+			continue // available to explicit rules, but too broad for legacy defaults
+		}
 		cats = append(cats, c)
 	}
 	sort.Strings(cats)
@@ -67,9 +90,14 @@ func BuiltinCategories() []string {
 }
 
 type namedPattern struct {
-	category string
-	re       *regexp.Regexp
-	triggers []string
+	category   string
+	rule       string
+	action     string
+	generator  string
+	priority   int
+	valueGroup int
+	re         *regexp.Regexp
+	triggers   []string
 }
 
 // builtinTriggers lists cheap literal substrings that must appear for a pattern
@@ -93,12 +121,20 @@ var builtinTriggers = map[string][]string{
 	"phone_us":                   {"(", "+1"},
 	"phone_intl":                 {"+"},
 	"iban":                       {},
+	"ipv4":                       {"."},
+	"ipv6":                       {":"},
+	"hostname":                   {},
+	"domain":                     {"."},
+	"uuid":                       {"-"},
+	"url":                        {"http://", "https://"},
 }
 
 // categories requiring post-regex validation before accepting a match.
 var postValidators = map[string]func(string) bool{
 	"credit_card": luhnValid,
 	"ssn":         ssnValid,
+	"ipv4":        func(s string) bool { return net.ParseIP(s) != nil && !strings.Contains(s, ":") },
+	"ipv6":        func(s string) bool { return net.ParseIP(s) != nil && strings.Contains(s, ":") },
 }
 
 // RegexDetector applies a configured set of built-in and custom regex
@@ -124,20 +160,68 @@ func NewRegexDetector(categories []string, custom []CustomPattern) (*RegexDetect
 		}
 		d.patterns = append(d.patterns, namedPattern{
 			category: cat,
+			rule:     cat,
+			action:   "placeholder",
 			re:       re,
 			triggers: builtinTriggers[cat],
 		})
 	}
 
 	for _, c := range custom {
-		re, err := regexp.Compile(c.Pattern)
+		if c.Enabled != nil && !*c.Enabled {
+			continue
+		}
+		pattern := c.Pattern
+		if c.Detector != "" {
+			cat := strings.TrimPrefix(c.Detector, "builtin_")
+			if cat == "fqdn" {
+				cat = "domain"
+			}
+			var ok bool
+			pattern, ok = builtinPatterns[cat]
+			if !ok {
+				return nil, fmt.Errorf("unknown builtin detector %q", c.Detector)
+			}
+		}
+		if pattern == "" {
+			return nil, fmt.Errorf("custom rule %q has no pattern or detector", c.Name)
+		}
+		if c.CaseSensitive != nil && !*c.CaseSensitive && !strings.HasPrefix(pattern, "(?i)") {
+			pattern = "(?i)" + pattern
+		}
+		re, err := regexp.Compile(pattern)
 		if err != nil {
 			return nil, fmt.Errorf("compiling custom pattern %q: %w", c.Name, err)
 		}
+		category := c.Category
+		if category == "" {
+			category = c.Name
+		}
+		action := c.Action
+		if action == "" {
+			action = "placeholder"
+		}
+		group := c.CaptureGroup
+		if group == "" && re.SubexpIndex("value") >= 0 {
+			group = "value"
+		}
+		groupIndex := 0
+		if group != "" {
+			groupIndex = re.SubexpIndex(group)
+			if groupIndex < 0 {
+				return nil, fmt.Errorf("custom rule %q references missing capture group %q", c.Name, group)
+			}
+		}
 		d.patterns = append(d.patterns, namedPattern{
-			category: c.Name,
-			re:       re,
-			triggers: extractTriggers(c.Pattern),
+			category:   category,
+			rule:       c.Name,
+			action:     action,
+			generator:  c.Generator,
+			priority:   c.Priority,
+			valueGroup: groupIndex,
+			re:         re,
+			// User policy must favor correctness over a speculative fast path.
+			triggers: nil,
 		})
 	}
 
@@ -157,16 +241,28 @@ func (d *RegexDetector) Detect(text string) []Match {
 			continue
 		}
 		validate := postValidators[p.category]
-		for _, loc := range p.re.FindAllStringIndex(text, -1) {
+		for _, locs := range p.re.FindAllStringSubmatchIndex(text, -1) {
+			loc := locs[:2]
+			if p.valueGroup > 0 {
+				i := p.valueGroup * 2
+				if i+1 >= len(locs) || locs[i] < 0 {
+					continue
+				}
+				loc = locs[i : i+2]
+			}
 			value := text[loc[0]:loc[1]]
 			if validate != nil && !validate(value) {
 				continue
 			}
 			matches = append(matches, Match{
-				Category: p.category,
-				Value:    value,
-				Start:    loc[0],
-				End:      loc[1],
+				Category:  p.category,
+				Value:     value,
+				Start:     loc[0],
+				End:       loc[1],
+				Rule:      p.rule,
+				Action:    p.action,
+				Generator: p.generator,
+				Priority:  p.priority,
 			})
 		}
 	}

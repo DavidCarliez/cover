@@ -1,11 +1,12 @@
 # llm-guard
 
-[![CI](https://github.com/densub/llm-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/densub/llm-guard/actions/workflows/ci.yml)
+[![CI](https://github.com/DavidCarliez/llm-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/DavidCarliez/llm-guard/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
 
 A local proxy that sits between your AI agents and remote LLM APIs (OpenAI,
 Anthropic, or any other HTTP API). It scans outgoing requests for secrets,
-API keys, and other sensitive data, replaces them with placeholder tokens
+API keys, and other sensitive data, replaces them with reversible realistic
+pseudonyms, placeholders, masks, or redaction markers according to local policy
 before they leave your machine, and restores the original values in the
 response so your agent keeps working normally.
 
@@ -28,13 +29,16 @@ reaches your agent.
    card numbers, phone numbers, and IBANs — see
    `internal/redact/detectors/regex.go`), plus an optional local LLM pass
    for free-form sensitive content (see below).
-2. Each match is replaced with a placeholder token like `⟦RG:a1b2c3d4⟧` and
-   recorded in an in-memory map (`hash -> original value`). The same value
-   always maps to the same placeholder.
+2. Each rule chooses `pseudonymize`, `placeholder`, `mask`, `redact`, `block`,
+   or `allow`. Reversible replacements are recorded in a bounded, session-local
+   in-memory bijection. The same value maps consistently within that session.
 3. The redacted body is forwarded to `upstream`.
-4. The response (including `text/event-stream` / chunked streaming
-   responses) is scanned for placeholder tokens, which are swapped back for
-   their original values before being returned to the agent.
+4. The response (including `text/event-stream` / chunked streaming responses)
+   is scanned for reversible fakes and placeholders, which are swapped back for
+   their originals before being returned to the agent.
+
+Malformed JSON, detector/generator failures, mapping exhaustion, and blocked
+rules are rejected locally. The original request is never used as a fallback.
 
 Redaction mappings live in memory only for the life of the `llmguard`
 process and are never written to disk. Logs record which categories were
@@ -48,7 +52,7 @@ Add your own patterns (e.g. internal project codenames, customer IDs) via
 ### One command (recommended)
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/densub/llm-guard/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/DavidCarliez/llm-guard/main/scripts/install.sh | bash
 ```
 
 For non-interactive installs (CI, scripts), set agents explicitly:
@@ -80,7 +84,7 @@ running `claude` session and start a new one after installing.
 Requires Go (see `go.mod` for the version used to build).
 
 ```sh
-git clone https://github.com/densub/llm-guard.git && cd llm-guard
+git clone https://github.com/DavidCarliez/llm-guard.git && cd llm-guard
 go build -o llmguard ./cmd/llmguard
 ```
 
@@ -130,6 +134,40 @@ llmguard test
 Runs a built-in sample payload containing fake secrets through the redactor
 (no network calls) and prints what gets redacted and restored.
 
+### Define and test privacy rules
+
+Top-level `rules` are declarative and validated at startup. Each rule supports
+`pattern` or a `builtin_*` detector, `category`, `priority`, `action`,
+`generator`, `enabled`, `case_sensitive`, and `capture_group`. If a regular
+expression contains `(?P<value>...)`, only that captured value is transformed.
+Invalid regexes, actions, generators, or capture groups stop startup.
+
+```yaml
+rules:
+  internal_ip:
+    detector: builtin_ipv4
+    action: pseudonymize
+    generator: ipv4
+  password:
+    pattern: '(?i)password\s*[:=]\s*(?P<value>[^\s,;]+)'
+    action: pseudonymize
+    generator: password
+  api_key:
+    pattern: '(?i)api[_-]?key\s*[:=]\s*(?P<value>[A-Za-z0-9._-]{16,})'
+    action: block
+    priority: 100
+```
+
+Preview exactly what would be sent upstream without making a network request:
+
+```sh
+llmguard inspect request.json
+```
+
+The JSON report contains the transformed request, categories, matched rule
+names, actions, warnings, and blocked status. It never prints the reversible
+mapping or a separate list of original sensitive values.
+
 ## Hook it up to your agent
 
 Once the proxy is running on `127.0.0.1:8317` (the default — change via
@@ -153,6 +191,28 @@ Code now flows through llm-guard before reaching `api.anthropic.com`.
 ```sh
 export OPENAI_BASE_URL=http://127.0.0.1:8317/v1
 ```
+
+For a Codex Router deployment, copy
+[`configs/codex-router.example.yaml`](configs/codex-router.example.yaml) and set
+its `upstream` to your router:
+
+```text
+Codex / OMP
+      |
+      v
+llm-guard privacy proxy
+      |
+      v
+Codex Router
+      |
+      v
+OpenAI / Anthropic / Gemini / local models / others
+```
+
+The proxy recursively scans generic JSON and does not depend on which provider
+the router chooses. Send a stable `X-LLMGuard-Session` header when reversible
+mappings must work across turns. A request without it receives an isolated
+mapping that is destroyed after its response completes.
 
 ### Any agent built on the OpenAI or Anthropic SDKs
 
@@ -198,9 +258,9 @@ to it over `127.0.0.1`. The core `llmguard` binary itself has no C
 dependencies and cross-compiles to any platform Go supports; the LLM fallback
 is available wherever ggml-org/llama.cpp publishes a prebuilt CPU binary
 (macOS arm64/x64, Linux x64/arm64/s390x, Windows x64/arm64). On any other
-platform, or if the binary/model haven't been downloaded, llm-guard logs a
-warning and runs with regex-only detection — the proxy never fails to start
-or hang because of this.
+platform, or if the binary/model have not been downloaded, leave the fallback
+disabled. When it is enabled, failure to start or query it causes startup or
+the affected request to fail closed rather than silently weakening the policy.
 
 ### Set it up
 
@@ -217,9 +277,8 @@ afterwards (`llmguard restart`).
 
 - ~500MB of disk for the model, plus a few MB for `llama-server`.
 - Each request gets one bounded "budget" (`overall_timeout_ms`, default
-  4000ms) for all LLM detector calls combined — if the budget runs out or
-  the local server is slow/unreachable, llm-guard just skips the LLM pass
-  for the rest of that request and returns the regex-only result.
+  4000ms) for all LLM detector calls combined. A timeout or unavailable local
+  server rejects that request locally.
 - String fields outside `min_text_len`/`max_text_len` (default 8–2000 bytes)
   are skipped entirely.
 - Matches are flagged under the `llm_sensitive` category. Every candidate the
@@ -236,6 +295,42 @@ development setup, testing, and pull request guidelines.
 This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Security
+
+### Assumptions, exclusions, and limitations
+
+The proxy protects JSON request bodies that pass through it. It intentionally
+does not transform structural protocol identifiers: `model`, `role`, `type`,
+protocol-context tool/function `name`, `id`, `tool_use_id`, `call_id`, `item_id`,
+`stop_reason`, and `stop_sequence`. Changing those fields can break model routing, tool dispatch,
+or response correlation. Do not place secrets in them. Text-bearing fields such
+as `instructions`, `system`, message content, tool arguments/results, command
+output, file content, assistant context, and user metadata are scanned.
+
+Data that can still leave the machine includes:
+
+- sensitive values that no enabled regex or local detector recognizes (false
+  negatives), including organization-specific terms without a custom rule;
+- values intentionally covered by an `allow` rule, and unprotected structural
+  identifiers listed above;
+- HTTP headers, URL paths, and query strings, which are transparently forwarded;
+- image pixels and other binary media. **Image pixels are not inspected for
+  sensitive content.** Set `media.images: block` to reject recognized inline
+  images and image URLs; detection of every possible media encoding is not
+  guaranteed;
+- non-string JSON values and encrypted/encoded text that does not match a rule;
+- data sent directly to a provider because a client was not actually configured
+  to use this proxy.
+
+Mappings stay in memory, are separated by the configured session header, expire
+after the configured TTL, and have hard session/entry limits. They are never
+persisted by default. Default logs contain path, status, transformed count,
+matched categories, and generic errors only—not request bodies, tool arguments,
+mapping contents, original values, or restored response bodies. There is no
+unsafe raw-debug logging mode by default.
+
+Use TLS or a trusted local transport if the proxy and router are on different
+hosts. Authentication headers pass through unchanged and remain visible to the
+upstream router/provider.
 
 If you discover a security vulnerability, please follow our
 [security policy](SECURITY.md) and report it privately — do not open a public

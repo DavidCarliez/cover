@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"time"
@@ -15,10 +16,9 @@ import (
 // LLM fallback detector.
 const Category = "llm_sensitive"
 
-// Detector is a detectors.Detector (and redact.ContextDetector) backed by a
-// running llama-server. It is a best-effort, additive pass: any error
-// (timeout, malformed response, server unreachable) results in no matches
-// rather than failing the request, so regex-based redaction is unaffected.
+// Detector is a detectors.Detector (and fail-closed context detector) backed
+// by a running llama-server. The error-returning API rejects protected requests
+// on timeout, malformed response, or server failure.
 type Detector struct {
 	server  *Server
 	client  *http.Client
@@ -65,8 +65,14 @@ type completionResponse struct {
 // returned candidate actually occurs verbatim in text (a hallucination
 // guard), and returns a Match for every verified occurrence.
 func (d *Detector) DetectWithContext(ctx context.Context, text string) []detectors.Match {
+	matches, _ := d.DetectWithContextE(ctx, text)
+	return matches
+}
+
+// DetectWithContextE is the fail-closed detector API used by protected proxy requests.
+func (d *Detector) DetectWithContextE(ctx context.Context, text string) ([]detectors.Match, error) {
 	if len(text) < d.minLen || len(text) > d.maxLen {
-		return nil
+		return nil, nil
 	}
 
 	ctx, cancel := context.WithTimeout(ctx, d.timeout)
@@ -79,33 +85,33 @@ func (d *Detector) DetectWithContext(ctx context.Context, text string) []detecto
 		Temperature: 0,
 	})
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("encoding local detector request")
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.server.BaseURL+"/completion", bytes.NewReader(reqBody))
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("building local detector request")
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := d.client.Do(req)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("local detector unavailable")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil
+		return nil, fmt.Errorf("local detector returned non-success status")
 	}
 
 	var result completionResponse
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return nil
+		return nil, fmt.Errorf("decoding local detector response")
 	}
 
 	var candidates []string
 	if err := json.Unmarshal([]byte(result.Content), &candidates); err != nil {
-		return nil
+		return nil, fmt.Errorf("validating local detector response")
 	}
 
 	var matches []detectors.Match
@@ -119,10 +125,12 @@ func (d *Detector) DetectWithContext(ctx context.Context, text string) []detecto
 				Value:    c,
 				Start:    start,
 				End:      start + len(c),
+				Rule:     "llm_sensitive",
+				Action:   "placeholder",
 			})
 		}
 	}
-	return matches
+	return matches, nil
 }
 
 // DetectBatchWithContext implements redact.BatchContextDetector. It scores

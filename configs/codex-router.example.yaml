@@ -1,0 +1,95 @@
+# Codex / OMP -> llm-guard -> Codex Router -> provider selected by the router
+listen: "127.0.0.1:8317"
+upstream: "http://127.0.0.1:8080"
+log_file: "~/.local/share/llmguard/redactions.log"
+
+upstream_timeouts:
+  connect_timeout_ms: 10000
+  response_header_timeout_ms: 120000
+
+cache:
+  enabled: true
+  max_entries: 10000
+
+mappings:
+  session_header: "X-LLMGuard-Session"
+  max_sessions: 128
+  max_entries_per_session: 10000
+  session_ttl_minutes: 60
+
+media:
+  images: block
+
+rules:
+  internal_ipv4:
+    detector: builtin_ipv4
+    category: network
+    action: pseudonymize
+    generator: ipv4
+    priority: 20
+  internal_ipv6:
+    detector: builtin_ipv6
+    category: network
+    action: pseudonymize
+    generator: ipv6
+    priority: 20
+  internal_domain:
+    pattern: '(?i)\b[a-z0-9.-]+\.(?:internal|corp\.example\.com)\b'
+    category: internal_domain
+    action: pseudonymize
+    generator: domain
+    priority: 30
+  password:
+    pattern: '(?i)(password|passwd|pwd)\s*[:=]\s*(?P<value>[^\s,;]+)'
+    category: credential
+    action: pseudonymize
+    generator: password
+    priority: 50
+  api_key:
+    pattern: '(?i)api[_-]?key\s*[:=]\s*(?P<value>[A-Za-z0-9._-]{16,})'
+    category: api_key
+    action: block
+    priority: 100
+  project_keyword:
+    pattern: '(?i)\bSECRET_PROJECT\b'
+    category: project
+    action: pseudonymize
+    generator: alias
+    priority: 40
+
+detectors:
+  regex:
+    enabled: true
+    builtin_categories:
+      - aws_access_key
+      - aws_secret_key
+      - gcp_api_key
+      - github_token
+      - gitlab_token
+      - slack_token
+      - stripe_key
+      - openai_key
+      - anthropic_key
+      - private_key_block
+      - jwt
+      - generic_api_key_assignment
+      - email
+      - ssn
+      - credit_card
+      - phone_us
+      - phone_intl
+      - iban
+    custom_patterns: []
+  llm_fallback:
+    enabled: false
+    server_path: ""
+    model_path: ""
+    port: 8418
+    min_text_len: 8
+    max_text_len: 2000
+    request_timeout_ms: 3000
+    overall_timeout_ms: 4000
+    skip_if_regex_matched: false
+    concurrency: 4
+    batch_size: 8
+    llamacpp_release: "latest"

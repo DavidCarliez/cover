@@ -129,18 +129,52 @@ func (r *Redactor) redactBody(body []byte, injectNote bool) ([]byte, []string) {
 // Restore replaces any placeholder tokens in data with the original values
 // recorded during Redact. Unknown placeholders are left untouched.
 func (r *Redactor) Restore(data []byte) []byte {
-	openLen := len(placeholderOpen)
-	closeLen := len(placeholderClose)
-	return placeholderRe.ReplaceAllFunc(data, func(match []byte) []byte {
-		if len(match) < openLen+closeLen {
-			return match
+	return r.RestoreForSession(data, defaultSessionID)
+}
+
+func (r *Redactor) RestoreForSession(data []byte, session string) []byte {
+	mappings := r.store.ReverseMappings(session)
+	if len(mappings) == 0 {
+		return data
+	}
+	pairs := make([]string, 0, len(mappings)*2)
+	for _, fake := range sortedFakeKeys(mappings) {
+		pairs = append(pairs, fake, mappings[fake])
+	}
+	return []byte(strings.NewReplacer(pairs...).Replace(string(data)))
+}
+
+func (r *Redactor) StreamReserve(session string) int {
+	max := r.store.MaxFakeLen(session)
+	if max <= 1 {
+		return 0
+	}
+	return max - 1
+}
+
+func (r *Redactor) EndSession(session string) { r.store.DeleteSession(session) }
+
+func (r *Redactor) SafeStreamCut(data []byte, session string) int {
+	reserve := r.StreamReserve(session)
+	if len(data) <= reserve {
+		return 0
+	}
+	cut := len(data) - reserve
+	for fake := range r.store.ReverseMappings(session) {
+		start := 0
+		for {
+			i := bytes.Index(data[start:], []byte(fake))
+			if i < 0 {
+				break
+			}
+			i += start
+			if i < cut && i+len(fake) > cut {
+				cut = i
+			}
+			start = i + 1
 		}
-		hash := string(match[openLen : len(match)-closeLen])
-		if val, ok := r.store.Lookup(hash); ok {
-			return []byte(val)
-		}
-		return match
-	})
+	}
+	return cut
 }
 
 var protocolKeys = map[string]bool{

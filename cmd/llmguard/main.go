@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -14,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
@@ -46,7 +48,7 @@ func main() {
 			"in the response.",
 	}
 
-	root.AddCommand(installCmd(), envCmd(), initCmd(), startCmd(), stopCmd(), restartCmd(), statusCmd(), testCmd(), modelsCmd())
+	root.AddCommand(installCmd(), envCmd(), initCmd(), startCmd(), stopCmd(), restartCmd(), statusCmd(), testCmd(), inspectCmd(), modelsCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
@@ -318,6 +320,56 @@ func testCmd() *cobra.Command {
 	}
 }
 
+func inspectCmd() *cobra.Command {
+	var session string
+	cmd := &cobra.Command{
+		Use:   "inspect request.json",
+		Short: "Show the protected request that would be sent upstream without forwarding it",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadOrDefaultConfig()
+			if err != nil {
+				return err
+			}
+			if err := cfg.Validate(); err != nil {
+				return err
+			}
+			body, err := os.ReadFile(args[0])
+			if err != nil {
+				return fmt.Errorf("reading request file: %w", err)
+			}
+			r, cleanup, err := buildRedactor(cfg)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			result, err := r.Transform(body, session, false, cfg.Media.Images)
+			if err != nil {
+				return err
+			}
+			var transformed any
+			if len(result.Body) > 0 {
+				if err := json.Unmarshal(result.Body, &transformed); err != nil {
+					return fmt.Errorf("encoding inspection result")
+				}
+			}
+			output := struct {
+				Categories  []string             `json:"categories"`
+				Matches     []redact.MatchReport `json:"matches"`
+				Transformed int                  `json:"transformed"`
+				Blocked     bool                 `json:"blocked"`
+				Warnings    []string             `json:"warnings,omitempty"`
+				Request     any                  `json:"transformed_request"`
+			}{result.Categories, result.Matches, result.Transformed, result.Blocked, result.Warnings, transformed}
+			enc := json.NewEncoder(os.Stdout)
+			enc.SetIndent("", "  ")
+			return enc.Encode(output)
+		},
+	}
+	cmd.Flags().StringVar(&session, "session", "inspect", "local mapping session identifier")
+	return cmd
+}
+
 func modelsCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "models",
@@ -484,6 +536,8 @@ func runForeground() error {
 	p, err := proxy.New(cfg.Upstream, redactor, logger, proxy.Options{
 		ConnectTimeout:        time.Duration(cfg.UpstreamTimeouts.ConnectTimeoutMS) * time.Millisecond,
 		ResponseHeaderTimeout: time.Duration(cfg.UpstreamTimeouts.ResponseHeaderTimeoutMS) * time.Millisecond,
+		SessionHeader:         cfg.Mappings.SessionHeader,
+		MediaImages:           cfg.Media.Images,
 	})
 	if err != nil {
 		return err
@@ -633,12 +687,35 @@ func loadOrDefaultConfig() (*config.Config, error) {
 // must be called when the redactor is no longer needed; it stops the local
 // LLM fallback subprocess (if one was started).
 func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
-	store := redact.NewStore()
+	if err := cfg.Validate(); err != nil {
+		return nil, func() {}, err
+	}
+	store := redact.NewStoreWithOptions(redact.StoreOptions{
+		MaxSessions:          cfg.Mappings.MaxSessions,
+		MaxEntriesPerSession: cfg.Mappings.MaxEntriesPerSession,
+		SessionTTL:           time.Duration(cfg.Mappings.SessionTTLMinutes) * time.Minute,
+	})
 	cleanup := func() {}
 
 	var dets []detectors.Detector
-	if cfg.Detectors.Regex.Enabled {
-		rd, err := detectors.NewRegexDetector(cfg.Detectors.Regex.BuiltinCategories, cfg.Detectors.Regex.CustomPatterns)
+	if cfg.Detectors.Regex.Enabled || len(cfg.Rules) > 0 {
+		var categories []string
+		var custom []detectors.CustomPattern
+		if cfg.Detectors.Regex.Enabled {
+			categories = cfg.Detectors.Regex.BuiltinCategories
+			custom = append(custom, cfg.Detectors.Regex.CustomPatterns...)
+		}
+		names := make([]string, 0, len(cfg.Rules))
+		for name := range cfg.Rules {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			rule := cfg.Rules[name]
+			rule.Name = name
+			custom = append(custom, rule)
+		}
+		rd, err := detectors.NewRegexDetector(categories, custom)
 		if err != nil {
 			return nil, cleanup, fmt.Errorf("configuring regex detector: %w", err)
 		}
@@ -660,6 +737,8 @@ func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
 			dets = append(dets, det)
 			llmBudget = time.Duration(cfg.Detectors.LLMFallback.OverallTimeoutMS) * time.Millisecond
 			cleanup = llmCleanup
+		} else {
+			return nil, cleanup, fmt.Errorf("enabled local LLM detector is unavailable; refusing to start with a weaker policy")
 		}
 	}
 
