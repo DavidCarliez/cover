@@ -68,7 +68,6 @@ detectors:
       - gitlab_token
       - slack_token
       - stripe_key
-      - openai_key
       - anthropic_key
       - private_key_block
       - jwt

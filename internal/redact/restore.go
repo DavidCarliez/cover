@@ -48,6 +48,9 @@ func (r *Redactor) walkRestoreStrings(v any, session string) any {
 		return r.restoreString(val, session)
 	case map[string]any:
 		for k, vv := range val {
+			if immutableProtocolField(k) {
+				continue
+			}
 			val[k] = r.walkRestoreStrings(vv, session)
 		}
 		return val

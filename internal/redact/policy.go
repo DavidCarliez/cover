@@ -163,6 +163,9 @@ func collectStrings(v any, out map[string]struct{}) {
 // fields (instructions, system, arguments, results, content, output, metadata)
 // are deliberately scanned.
 func excludedProtocolField(object map[string]any, path []string, key string) bool {
+	if immutableProtocolField(key) {
+		return true
+	}
 	switch key {
 	case "model", "role", "type", "id", "tool_use_id", "call_id", "item_id", "stop_reason", "stop_sequence":
 		return true
@@ -182,6 +185,12 @@ func excludedProtocolField(object map[string]any, path []string, key string) boo
 	default:
 		return false
 	}
+}
+
+// Opaque cryptographic protocol values must pass through unchanged. Scanning
+// or restoring a coincidental detector/placeholder match corrupts the value.
+func immutableProtocolField(key string) bool {
+	return key == "encrypted_content"
 }
 
 func (r *Redactor) walkPolicy(ctx context.Context, v any, session string, path []string, occupied map[string]struct{}, result *TransformResult, changed *bool, capture bool) (any, error) {

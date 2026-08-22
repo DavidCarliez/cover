@@ -33,6 +33,31 @@ func TestRestoreResponse_JSONEscapesQuotes(t *testing.T) {
 	}
 }
 
+func TestRestoreResponseDoesNotAlterEncryptedContent(t *testing.T) {
+	r := newTestRedactor(t)
+	secret := "customer@example.com"
+	redacted, _ := r.Redact([]byte(secret))
+	fake := string(redacted)
+	body, err := json.Marshal(map[string]any{
+		"output_text":       fake,
+		"encrypted_content": fake,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := r.RestoreResponse(body, "application/json")
+	var got map[string]any
+	if err := json.Unmarshal(restored, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["output_text"] != secret {
+		t.Fatalf("normal response text was not restored: %q", got["output_text"])
+	}
+	if got["encrypted_content"] != fake {
+		t.Fatalf("encrypted_content was altered: %q", got["encrypted_content"])
+	}
+}
+
 func TestRestoreSSEEvent_JSONEscapesQuotes(t *testing.T) {
 	d, err := detectors.NewRegexDetector([]string{"generic_api_key_assignment"}, nil)
 	if err != nil {

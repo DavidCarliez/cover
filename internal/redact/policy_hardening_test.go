@@ -115,6 +115,26 @@ func TestSensitiveCapturesRequireExplicitTransformMode(t *testing.T) {
 	}
 }
 
+func TestEncryptedContentIsNeverScanned(t *testing.T) {
+	r := policyRedactor(t, detectors.CustomPattern{Name: "customer", Pattern: `nike`, Action: "pseudonymize", Generator: "alias"})
+	body := []byte(`{"input":"nike","reasoning":{"encrypted_content":"nike"}}`)
+	result, err := r.TransformWithCaptures(body, "encrypted-content", false, "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(result.Body, &got); err != nil {
+		t.Fatal(err)
+	}
+	reasoning := got["reasoning"].(map[string]any)
+	if reasoning["encrypted_content"] != "nike" {
+		t.Fatalf("encrypted_content was changed: %q", reasoning["encrypted_content"])
+	}
+	if got["input"] == "nike" || len(result.Captures) != 1 {
+		t.Fatalf("ordinary input was not protected independently: body=%s captures=%+v", result.Body, result.Captures)
+	}
+}
+
 func TestPlaceholdersAreSeparatedAcrossKeys(t *testing.T) {
 	var keyA, keyB [32]byte
 	keyA[0], keyB[0] = 1, 2

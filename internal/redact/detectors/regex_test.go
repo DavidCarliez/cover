@@ -17,7 +17,6 @@ func TestRegexDetector_Builtin(t *testing.T) {
 		{"gitlab_token", "glpat-XXXXXXXXXXXXXXXXXXXX"},
 		{"slack_token", "xoxb-1234567890123"},
 		{"stripe_key", stripeSample},
-		{"openai_key", "sk-1234567890abcdefghijklmnop"},
 		{"anthropic_key", "sk-ant-api03XXXXXXXXXXXXXXXXXXXXXXXX"},
 		{"private_key_block", "-----BEGIN RSA PRIVATE KEY-----\nMIIBVQIBADANBgkqhkiG\n-----END RSA PRIVATE KEY-----"},
 		{"jwt", "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dGVzdHNpZ25hdHVyZQ"},
@@ -51,6 +50,12 @@ func TestRegexDetector_Builtin(t *testing.T) {
 				t.Errorf("category %s: expected match value %q, got %+v", tc.category, tc.sample, matches)
 			}
 		})
+	}
+}
+
+func TestOpenAIKeyIsNotABuiltinCategory(t *testing.T) {
+	if _, err := NewRegexDetector([]string{"openai_key"}, nil); err == nil {
+		t.Fatal("openai_key must not be available as a built-in detector")
 	}
 }
 
