@@ -1,6 +1,6 @@
 # Security Policy
 
-Cover is a security tool — if you find a vulnerability, we want to hear
+Cover is a security tool. If you find a vulnerability, we want to hear
 about it responsibly.
 
 ## Supported Versions
@@ -12,15 +12,17 @@ no formal LTS policy yet; please use the most recent version.
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-Instead, email [00denishsubedi@gmail.com](mailto:00denishsubedi@gmail.com) with:
+Use Cover's private
+[GitHub vulnerability reporting form](https://github.com/DavidCarliez/cover/security/advisories/new)
+with:
 
 - A description of the vulnerability and its potential impact
 - Steps to reproduce (proof of concept if available)
 - Affected version or commit hash
 - Any suggested fix, if you have one
 
-You should receive an acknowledgment within **72 hours**. We will work with you
-to understand the issue, develop a fix, and coordinate disclosure timing.
+The maintainers will review the report, work with you to understand the issue,
+develop a fix, and coordinate disclosure timing.
 
 ## What to Report
 
@@ -35,8 +37,7 @@ Examples of in-scope reports:
 
 ## Out of Scope
 
-- Issues in third-party dependencies already fixed upstream (please report to
-  the upstream project)
+- Issues in third-party dependencies already fixed by their maintainers
 - Social engineering attacks
 - Missing detections for secret formats not yet covered (file a regular feature
   request instead, unless you can demonstrate a bypass of an existing detector)

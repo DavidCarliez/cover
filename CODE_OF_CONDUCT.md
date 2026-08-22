@@ -59,8 +59,8 @@ representative at an online or offline event.
 ## Enforcement
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
-reported to the community leaders responsible for enforcement at
-[00denishsubedi@gmail.com](mailto:00denishsubedi@gmail.com).
+reported privately to the project maintainers through Cover's
+[GitHub reporting form](https://github.com/DavidCarliez/cover/security/advisories/new).
 
 All complaints will be reviewed and investigated promptly and fairly.
 
