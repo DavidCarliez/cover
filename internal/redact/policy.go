@@ -25,13 +25,24 @@ type MatchReport struct {
 	Generator string `json:"generator,omitempty"`
 }
 
+// CaptureReport contains sensitive values and is populated only by the
+// explicit live-content monitor path. It must never be logged or persisted.
+type CaptureReport struct {
+	Rule        string `json:"rule"`
+	Category    string `json:"category"`
+	Action      string `json:"action"`
+	Original    string `json:"original"`
+	Replacement string `json:"replacement"`
+}
+
 type TransformResult struct {
-	Body        []byte        `json:"-"`
-	Categories  []string      `json:"categories"`
-	Matches     []MatchReport `json:"matches"`
-	Transformed int           `json:"transformed"`
-	Blocked     bool          `json:"blocked"`
-	Warnings    []string      `json:"warnings,omitempty"`
+	Body        []byte          `json:"-"`
+	Categories  []string        `json:"categories"`
+	Matches     []MatchReport   `json:"matches"`
+	Transformed int             `json:"transformed"`
+	Blocked     bool            `json:"blocked"`
+	Warnings    []string        `json:"warnings,omitempty"`
+	Captures    []CaptureReport `json:"-"`
 }
 
 // FieldRule applies a policy to an entire JSON string value when its object
@@ -58,6 +69,17 @@ type ContextErrorDetector interface {
 // Transform validates JSON and applies policy. Any inspection failure returns
 // an error and no body suitable for forwarding.
 func (r *Redactor) Transform(body []byte, session string, injectNote bool, mediaPolicy string) (TransformResult, error) {
+	return r.transform(body, session, injectNote, mediaPolicy, false)
+}
+
+// TransformWithCaptures is used only by the authenticated, live-only content
+// monitor. Ordinary proxying and inspection never retain original match values
+// in TransformResult.
+func (r *Redactor) TransformWithCaptures(body []byte, session string, injectNote bool, mediaPolicy string) (TransformResult, error) {
+	return r.transform(body, session, injectNote, mediaPolicy, true)
+}
+
+func (r *Redactor) transform(body []byte, session string, injectNote bool, mediaPolicy string, capture bool) (TransformResult, error) {
 	var result TransformResult
 	if len(bytes.TrimSpace(body)) == 0 {
 		result.Body = body
@@ -101,7 +123,7 @@ func (r *Redactor) Transform(body []byte, session string, injectNote bool, media
 		defer cancel()
 	}
 	changed := false
-	walked, err := r.walkPolicy(ctx, data, session, nil, occupied, &result, &changed)
+	walked, err := r.walkPolicy(ctx, data, session, nil, occupied, &result, &changed, capture)
 	if err != nil {
 		return TransformResult{}, err
 	}
@@ -162,10 +184,10 @@ func excludedProtocolField(object map[string]any, path []string, key string) boo
 	}
 }
 
-func (r *Redactor) walkPolicy(ctx context.Context, v any, session string, path []string, occupied map[string]struct{}, result *TransformResult, changed *bool) (any, error) {
+func (r *Redactor) walkPolicy(ctx context.Context, v any, session string, path []string, occupied map[string]struct{}, result *TransformResult, changed *bool, capture bool) (any, error) {
 	switch val := v.(type) {
 	case string:
-		return r.transformString(ctx, val, session, occupied, result, changed)
+		return r.transformString(ctx, val, session, occupied, result, changed, capture)
 	case map[string]any:
 		for k, vv := range val {
 			if excludedProtocolField(val, path, k) {
@@ -173,7 +195,7 @@ func (r *Redactor) walkPolicy(ctx context.Context, v any, session string, path [
 			}
 			if text, ok := vv.(string); ok {
 				if rule, matched := r.fieldRule(k); matched {
-					nv, err := r.transformFieldString(text, session, occupied, result, changed, rule)
+					nv, err := r.transformFieldString(text, session, occupied, result, changed, rule, capture)
 					if err != nil {
 						return nil, err
 					}
@@ -181,7 +203,7 @@ func (r *Redactor) walkPolicy(ctx context.Context, v any, session string, path [
 					continue
 				}
 			}
-			nv, err := r.walkPolicy(ctx, vv, session, append(path, k), occupied, result, changed)
+			nv, err := r.walkPolicy(ctx, vv, session, append(path, k), occupied, result, changed, capture)
 			if err != nil {
 				return nil, err
 			}
@@ -190,7 +212,7 @@ func (r *Redactor) walkPolicy(ctx context.Context, v any, session string, path [
 		return val, nil
 	case []any:
 		for i, vv := range val {
-			nv, err := r.walkPolicy(ctx, vv, session, path, occupied, result, changed)
+			nv, err := r.walkPolicy(ctx, vv, session, path, occupied, result, changed, capture)
 			if err != nil {
 				return nil, err
 			}
@@ -268,7 +290,7 @@ func selectNonOverlapping(matches []detectors.Match) []detectors.Match {
 	return selected
 }
 
-func (r *Redactor) transformString(ctx context.Context, text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool) (string, error) {
+func (r *Redactor) transformString(ctx context.Context, text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, capture bool) (string, error) {
 	var all []detectors.Match
 	for _, det := range r.detectors {
 		matches, err := safeDetect(ctx, det, text)
@@ -277,10 +299,10 @@ func (r *Redactor) transformString(ctx context.Context, text, session string, oc
 		}
 		all = append(all, matches...)
 	}
-	return r.transformMatches(text, session, occupied, result, changed, all)
+	return r.transformMatches(text, session, occupied, result, changed, all, capture)
 }
 
-func (r *Redactor) transformFieldString(text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, rule FieldRule) (string, error) {
+func (r *Redactor) transformFieldString(text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, rule FieldRule, capture bool) (string, error) {
 	if text == "" {
 		return text, nil
 	}
@@ -297,10 +319,10 @@ func (r *Redactor) transformFieldString(text, session string, occupied map[strin
 		Action:    rule.Action,
 		Generator: rule.Generator,
 		Priority:  rule.Priority,
-	}})
+	}}, capture)
 }
 
-func (r *Redactor) transformMatches(text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, matches []detectors.Match) (string, error) {
+func (r *Redactor) transformMatches(text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, matches []detectors.Match, capture bool) (string, error) {
 	for _, m := range matches {
 		if m.Start < 0 || m.End <= m.Start || m.End > len(text) || text[m.Start:m.End] != m.Value {
 			return "", fmt.Errorf("%w: detector returned invalid span", ErrUnsafeRequest)
@@ -354,6 +376,12 @@ func (r *Redactor) transformMatches(text, session string, occupied map[string]st
 			result.Transformed++
 		default:
 			return "", fmt.Errorf("%w: unknown action", ErrUnsafeRequest)
+		}
+		if capture {
+			result.Captures = append(result.Captures, CaptureReport{
+				Rule: m.Rule, Category: m.Category, Action: action,
+				Original: m.Value, Replacement: replacement,
+			})
 		}
 		b.WriteString(replacement)
 		if replacement != m.Value {

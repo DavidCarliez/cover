@@ -96,6 +96,25 @@ func TestPseudonymsAreStablePerKeyAndSeparatedAcrossKeys(t *testing.T) {
 	}
 }
 
+func TestSensitiveCapturesRequireExplicitTransformMode(t *testing.T) {
+	r := policyRedactor(t, detectors.CustomPattern{Name: "customer", Pattern: `nike`, Action: "pseudonymize", Generator: "alias"})
+	body := []byte(`{"text":"nike"}`)
+	ordinary, err := r.Transform(body, "ordinary", false, "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ordinary.Captures) != 0 {
+		t.Fatalf("ordinary transform retained sensitive captures: %+v", ordinary.Captures)
+	}
+	captured, err := r.TransformWithCaptures(body, "live-monitor", false, "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(captured.Captures) != 1 || captured.Captures[0].Original != "nike" || captured.Captures[0].Replacement == "nike" {
+		t.Fatalf("unexpected explicit capture: %+v", captured.Captures)
+	}
+}
+
 func TestPlaceholdersAreSeparatedAcrossKeys(t *testing.T) {
 	var keyA, keyB [32]byte
 	keyA[0], keyB[0] = 1, 2

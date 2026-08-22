@@ -22,6 +22,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/DavidCarliez/cover/internal/activity"
 	"github.com/DavidCarliez/cover/internal/config"
 	"github.com/DavidCarliez/cover/internal/daemon"
 	"github.com/DavidCarliez/cover/internal/install"
@@ -532,6 +533,11 @@ func runForeground() error {
 		return err
 	}
 	defer closeLog()
+	monitorKey, err := config.LoadOrCreatePseudonymKey(cfg.Pseudonymization.KeyFile)
+	if err != nil {
+		return fmt.Errorf("loading live monitor key: %w", err)
+	}
+	contentHub := activity.NewHub(4)
 
 	p, err := proxy.New(cfg.Upstream, redactor, logger, proxy.Options{
 		ConnectTimeout:        time.Duration(cfg.UpstreamTimeouts.ConnectTimeoutMS) * time.Millisecond,
@@ -541,6 +547,8 @@ func runForeground() error {
 		MaxRequestBytes:       cfg.Limits.RequestBytes,
 		MaxResponseBytes:      cfg.Limits.ResponseBytes,
 		MaxSSEEventBytes:      cfg.Limits.SSEEventBytes,
+		ContentHub:            contentHub,
+		ContentToken:          activity.ContentToken(monitorKey),
 	})
 	if err != nil {
 		return err

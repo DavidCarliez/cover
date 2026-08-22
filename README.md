@@ -31,7 +31,8 @@ and Codex/OMP support.
   mapping exhaustion, detector failure, and explicit block rules.
 - `cover inspect` for previewing the exact protected JSON without sending it.
 - `cover doctor` for local policy, daemon, key, listener, and Codex routing checks.
-- `cover monitor` for a live, allowlisted metadata view with no prompt content.
+- `cover monitor` for a live, allowlisted metadata view, plus an explicit
+  live-only sensitive-content option.
 - Safe metadata-only audit logs with no raw prompt or response bodies.
 - Configurable image policy (`allow`, `warn`, or `block`).
 - Optional local llama.cpp detector for sensitive free-form text that regular
@@ -217,6 +218,29 @@ and a generic error label. It reconstructs each event instead of printing raw
 log lines, so unknown fields—including any historical path or query fields—are
 discarded. Older events created before byte metrics were added display `-` for
 those columns.
+
+To see exactly which values were caught and the transformed JSON body handed
+to the upstream transport, enable the explicit sensitive view:
+
+```sh
+cover monitor --show-content          # follow new requests until Ctrl-C
+cover monitor --show-content --once   # show the next request, then exit
+cover monitor --show-content --json   # structured live content events
+```
+
+This mode displays each matched original and its replacement, followed by the
+exact protected request body sent toward the LLM. A locally blocked request is
+shown as `Sent to LLM: nothing (blocked locally)`. The view is live-only:
+historical bodies and matched values do not exist because Cover never writes
+them to the audit log. Capture activates only after the monitor connects and
+stops when it disconnects.
+
+`--show-content` is intentionally loud because its terminal output is
+sensitive. Do not use it in a shared terminal, recorded session, CI log, or
+support transcript. The stream is available only over a reserved loopback
+endpoint and requires a bearer token derived from Cover's private installation
+key. If a viewer cannot keep up, Cover disconnects it instead of silently
+dropping content events.
 
 ### Define and test privacy rules
 
@@ -479,6 +503,10 @@ logs contain status, transformed count, byte counts, latency, matched
 categories, and generic errors only—not paths, queries, request bodies, tool
 arguments, mapping contents, original values, or restored response bodies.
 There is no unsafe raw-debug logging mode by default.
+
+The explicit `cover monitor --show-content` mode is the sole exception for
+on-screen inspection: it streams sensitive request details from memory to an
+authenticated local viewer while attached, without persisting them.
 
 Use TLS or a trusted local transport if the proxy and router are on different
 hosts. Authentication headers pass through unchanged and remain visible to the

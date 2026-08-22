@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/DavidCarliez/cover/internal/activity"
 	"github.com/DavidCarliez/cover/internal/redact"
 	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
@@ -309,5 +310,78 @@ func TestSSERestoringWriterRejectsOversizedEvent(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("close forwarded rejected SSE event: %q", out.String())
+	}
+}
+
+func TestLiveContentMonitorIsAuthenticatedLocalAndNeverLogged(t *testing.T) {
+	const original = "customer@example.com"
+	var upstreamBody []byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		upstreamBody, _ = io.ReadAll(req.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	var key [32]byte
+	key[0] = 7
+	token := activity.ContentToken(key)
+	hub := activity.NewHub(2)
+	var logs bytes.Buffer
+	r := policyProxyRedactor(t, detectors.CustomPattern{Name: "customer", Pattern: original, Action: "pseudonymize", Generator: "email"})
+	p, err := New(upstream.URL, r, log.New(&logs, "", 0), Options{ContentHub: hub, ContentToken: token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(p)
+	defer front.Close()
+
+	unauthorized, _ := http.NewRequest(http.MethodGet, front.URL+activity.ContentEndpoint, nil)
+	unauthorizedResponse, err := http.DefaultClient.Do(unauthorized)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = unauthorizedResponse.Body.Close()
+	if unauthorizedResponse.StatusCode != http.StatusNotFound {
+		t.Fatalf("unauthorized status=%d", unauthorizedResponse.StatusCode)
+	}
+
+	monitorRequest, _ := http.NewRequest(http.MethodGet, front.URL+activity.ContentEndpoint, nil)
+	monitorRequest.Header.Set("Authorization", "Bearer "+token)
+	monitorResponse, err := http.DefaultClient.Do(monitorRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer monitorResponse.Body.Close()
+	if monitorResponse.StatusCode != http.StatusOK {
+		t.Fatalf("monitor status=%d", monitorResponse.StatusCode)
+	}
+
+	clientResponse, err := http.Post(front.URL+"/responses", "application/json", strings.NewReader(`{"input":"customer@example.com"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = clientResponse.Body.Close()
+	var event activity.ContentEvent
+	if err := json.NewDecoder(monitorResponse.Body).Decode(&event); err != nil {
+		t.Fatal(err)
+	}
+	if len(event.Caught) != 1 || event.Caught[0].Original != original || event.Caught[0].Replacement == original {
+		t.Fatalf("unexpected captures: %+v", event.Caught)
+	}
+	if bytes.Contains(event.Sent, []byte(original)) || !bytes.Equal(event.Sent, upstreamBody) {
+		t.Fatalf("event body does not match protected upstream body: event=%s upstream=%s", event.Sent, upstreamBody)
+	}
+	if strings.Contains(logs.String(), original) || strings.Contains(logs.String(), event.Caught[0].Replacement) {
+		t.Fatalf("audit log retained live content: %q", logs.String())
+	}
+
+	remoteRequest := httptest.NewRequest(http.MethodGet, activity.ContentEndpoint, nil)
+	remoteRequest.RemoteAddr = "198.51.100.10:1234"
+	remoteRequest.Header.Set("Authorization", "Bearer "+token)
+	remoteResponse := httptest.NewRecorder()
+	p.ServeHTTP(remoteResponse, remoteRequest)
+	if remoteResponse.Code != http.StatusNotFound {
+		t.Fatalf("remote monitor status=%d", remoteResponse.Code)
 	}
 }

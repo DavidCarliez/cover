@@ -5,6 +5,8 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/subtle"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,6 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/DavidCarliez/cover/internal/activity"
 	"github.com/DavidCarliez/cover/internal/redact"
 )
 
@@ -40,6 +43,8 @@ type Options struct {
 	MaxRequestBytes       int64
 	MaxResponseBytes      int64
 	MaxSSEEventBytes      int64
+	ContentHub            *activity.Hub
+	ContentToken          string
 }
 
 func (o Options) withDefaults() Options {
@@ -64,12 +69,14 @@ func (o Options) withDefaults() Options {
 // Proxy forwards requests to a single upstream base URL, redacting request
 // bodies and restoring response bodies along the way.
 type Proxy struct {
-	upstream    *url.URL
-	client      *http.Client
-	redactor    *redact.Redactor
-	logger      *log.Logger
-	options     Options
-	nextSession atomic.Uint64
+	upstream     *url.URL
+	client       *http.Client
+	redactor     *redact.Redactor
+	logger       *log.Logger
+	options      Options
+	nextSession  atomic.Uint64
+	contentHub   *activity.Hub
+	contentToken string
 }
 
 // New creates a Proxy that forwards to upstream (must include scheme and
@@ -93,16 +100,22 @@ func New(upstream string, redactor *redact.Redactor, logger *log.Logger, opts Op
 	}
 
 	return &Proxy{
-		upstream: u,
-		client:   &http.Client{Transport: transport},
-		redactor: redactor,
-		logger:   logger,
-		options:  opts,
+		upstream:     u,
+		client:       &http.Client{Transport: transport},
+		redactor:     redactor,
+		logger:       logger,
+		options:      opts,
+		contentHub:   opts.ContentHub,
+		contentToken: opts.ContentToken,
 	}, nil
 }
 
 // ServeHTTP implements http.Handler.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == activity.ContentEndpoint {
+		p.serveContentMonitor(w, r)
+		return
+	}
 	started := time.Now()
 	defer r.Body.Close()
 	body, err := readAtMost(r.Body, p.options.MaxRequestBytes)
@@ -132,7 +145,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Do not inject protocol-specific guard notes. Generic recursive rewriting
 	// must preserve the upstream request schema (Responses, Chat, Anthropic, or
 	// another OpenAI-compatible router dialect).
-	result, err := p.redactor.Transform(body, session, false, p.options.MediaImages)
+	captureContent := p.contentHub != nil && p.contentHub.HasSubscribers()
+	var result redact.TransformResult
+	if captureContent {
+		result, err = p.redactor.TransformWithCaptures(body, session, false, p.options.MediaImages)
+	} else {
+		result, err = p.redactor.Transform(body, session, false, p.options.MediaImages)
+	}
 	if err != nil {
 		// Transform errors are deliberately generic and never contain matched
 		// values, request bodies, or mapping contents.
@@ -141,6 +160,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if result.Blocked {
+		p.publishContent(captureContent, started, result, nil)
 		p.logRequest(http.StatusForbidden, result.Transformed, result.Categories, 0, 0, time.Since(started))
 		http.Error(w, "request blocked by local privacy policy", http.StatusForbidden)
 		return
@@ -170,6 +190,9 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	outReq.Host = p.upstream.Host
 	outReq.ContentLength = int64(len(redactedBody))
 	outReq.Header.Set("Content-Length", strconv.Itoa(len(redactedBody)))
+	// Publish only after the exact outbound request has been constructed. This
+	// is the body handed to the transport; network delivery can still fail.
+	p.publishContent(captureContent, started, result, redactedBody)
 
 	resp, err := p.client.Do(outReq)
 	if err != nil {
@@ -223,6 +246,72 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	p.logRequest(resp.StatusCode, result.Transformed, categories, len(redactedBody), responseBytes, time.Since(started))
+}
+
+func (p *Proxy) serveContentMonitor(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	ip := net.ParseIP(host)
+	provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	authorized := err == nil && ip != nil && ip.IsLoopback() && p.contentToken != "" &&
+		subtle.ConstantTimeCompare([]byte(provided), []byte(p.contentToken)) == 1
+	if !authorized || p.contentHub == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	events, cancel, err := p.contentHub.Subscribe()
+	if err != nil {
+		http.Error(w, "live content monitor unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	defer cancel()
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.WriteHeader(http.StatusOK)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	encoder := json.NewEncoder(w)
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case event, ok := <-events:
+			if !ok {
+				return
+			}
+			if err := encoder.Encode(event); err != nil {
+				return
+			}
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		}
+	}
+}
+
+func (p *Proxy) publishContent(enabled bool, started time.Time, result redact.TransformResult, sent []byte) {
+	if !enabled || p.contentHub == nil {
+		return
+	}
+	event := activity.ContentEvent{
+		Time: started.UTC(), Transformed: result.Transformed, Blocked: result.Blocked,
+	}
+	for _, capture := range result.Captures {
+		event.Caught = append(event.Caught, activity.ContentCapture{
+			Rule: capture.Rule, Category: capture.Category, Action: capture.Action,
+			Original: capture.Original, Replacement: capture.Replacement,
+		})
+	}
+	if sent != nil {
+		event.Sent = append(json.RawMessage(nil), sent...)
+	}
+	p.contentHub.Publish(event)
 }
 
 type countingWriter struct {
