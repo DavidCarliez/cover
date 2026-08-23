@@ -1,6 +1,6 @@
 <h1 align="center">Cover</h1>
 
-<p align="center"><strong>Keep sensitive values out of LLM requests without breaking the conversation.</strong></p>
+<p align="center"><strong>Fake values go out. Real values come back.</strong></p>
 
 <p align="center">
   <a href="https://github.com/DavidCarliez/cover/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/DavidCarliez/cover/actions/workflows/ci.yml/badge.svg"></a>
@@ -17,39 +17,23 @@
   <a href="#security-boundary">Security</a>
 </p>
 
-Cover is a local privacy proxy for Codex, Claude Code, Cursor, SDKs, and other
-HTTP-based AI clients. It scans outgoing JSON, replaces matched values locally,
-and restores reversible replacements in JSON and streaming responses. The LLM
-receives the protected values, while the agent can continue using the originals.
+Cover is a bidirectional privacy proxy for AI coding agents. It replaces
+matched sensitive values locally with realistic, deterministic stand-ins
+before a request leaves your machine, then translates matching fakes in normal
+and streaming responses back to the originals. The model gets coherent
+context; your agent and tools keep working with the real environment.
 
-Cover runs as a transparent reverse proxy with policy-driven replacement,
-deterministic pseudonyms, operational checks, Codex support, and strict failure
-handling. It is designed to stay local, observable, and explicit about what it
-cannot inspect.
+<p align="center">
+  <img src="assets/cover-roundtrip.svg" alt="Cover changes private values into protected replacements before an LLM request, then restores reversible values in the response. It also supports placeholder, mask, redact, block, and allow policies." width="100%">
+</p>
 
-```mermaid
-flowchart LR
-    A["Agent"] -->|"JSON request"| C["Cover<br/>detect · transform · enforce"]
-    C -->|"protected request"| L["LLM or router"]
-    L -->|"JSON or SSE response"| C
-    C -->|"restored response"| A
-```
+Use reversible `pseudonymize` or `placeholder` rules when the conversation must
+keep working end to end. Use one-way `mask` or `redact` rules when restoration
+is unnecessary, `block` to stop a request locally, and `allow` for an explicit
+exception.
 
-## Highlights
-
-| Area | Cover functionality |
-| --- | --- |
-| Policy | Declarative rules with `allow`, `placeholder`, `pseudonymize`, `mask`, `redact`, and `block` actions |
-| Realistic replacements | Deterministic generators for IP addresses, hosts, domains, emails, usernames, passwords, UUIDs, URLs, and aliases |
-| Context-aware rules | Whole-value protection by JSON key, including short passwords such as `admin`, plus regex and built-in detector selectors |
-| Stable identities | Installation-keyed HMAC pseudonyms remain consistent across requests, sessions, and restarts |
-| Mapping safety | Bounded, session-isolated, memory-only reversible mappings with TTL and capacity limits |
-| Inspection | `cover inspect` previews the protected JSON without contacting an LLM |
-| Diagnostics | `cover doctor` verifies policy, daemon health, local fail-closed behavior, and Codex routing |
-| Monitoring | Metadata-only audit and monitor views, plus explicit live-only inspection of caught and forwarded content |
-| Proxy hardening | Loopback-by-default listeners, body and stream limits, generic safe errors, and fail-closed parsing |
-| Codex compatibility | Responses API and router configuration, compression checks, safe SSE restoration, and immutable `encrypted_content` fields |
-| Optional semantic pass | A local llama.cpp detector can inspect free-form text that regular expressions miss |
+Supported clients include **Codex**, **Claude Code**, **Cursor**, **Pi / Oh My
+Pi**, and **OpenAI- or Anthropic-compatible SDKs and routers**.
 
 ## Install
 
@@ -90,6 +74,22 @@ GOOS=windows GOARCH=amd64 go build -o cover.exe ./cmd/cover
 ```
 
 </details>
+
+## Highlights
+
+| Area | Cover functionality |
+| --- | --- |
+| Policy | Declarative rules with `allow`, `placeholder`, `pseudonymize`, `mask`, `redact`, and `block` actions |
+| Realistic replacements | Deterministic generators for IP addresses, hosts, domains, emails, usernames, passwords, UUIDs, URLs, and aliases |
+| Context-aware rules | Whole-value protection by JSON key, including short passwords such as `admin`, plus regex and built-in detector selectors |
+| Stable identities | Installation-keyed HMAC pseudonyms remain consistent across requests, sessions, and restarts |
+| Mapping safety | Bounded, session-isolated, memory-only reversible mappings with TTL and capacity limits |
+| Inspection | `cover inspect` previews the protected JSON without contacting an LLM |
+| Diagnostics | `cover doctor` verifies policy, daemon health, local fail-closed behavior, and Codex routing |
+| Monitoring | Metadata-only audit and monitor views, plus explicit live-only inspection of caught and forwarded content |
+| Proxy hardening | Loopback-by-default listeners, body and stream limits, generic safe errors, and fail-closed parsing |
+| Codex compatibility | Responses API and router configuration, compression checks, safe SSE restoration, and immutable `encrypted_content` fields |
+| Optional semantic pass | A local llama.cpp detector can inspect free-form text that regular expressions miss |
 
 ## Quick start
 
@@ -174,14 +174,14 @@ Key selectors protect complete string values. For example,
 `{"username":"admin"}` as a password. Named `(?P<value>...)` groups let a
 regex replace only the captured value.
 
-| Action | Result |
-| --- | --- |
-| `allow` | Record the match but leave it unchanged |
-| `placeholder` | Replace it with a short reversible token |
-| `pseudonymize` | Replace it with a realistic, deterministic value |
-| `mask` | Keep the first and last characters and mask the middle |
-| `redact` | Replace it with `[REDACTED]` |
-| `block` | Reject the complete request locally |
+| Action | What the LLM receives | Response behavior |
+| --- | --- | --- |
+| `allow` | The original value | Unchanged |
+| `placeholder` | A short opaque token | Restored locally when repeated |
+| `pseudonymize` | A realistic, deterministic fake | Restored locally when repeated |
+| `mask` | The first and last characters with the middle masked | One-way; not restored |
+| `redact` | `[REDACTED]` | One-way; not restored |
+| `block` | Nothing; Cover rejects the complete request locally | No upstream response |
 
 Pseudonym generators: `ipv4`, `ipv6`, `hostname`, `domain`, `fqdn`, `email`,
 `username`, `password`, `secret`, `uuid`, `url`, and `alias`.
@@ -323,12 +323,11 @@ API base URL setting. Confirm routing with `cover doctor` or `cover monitor`.
 ### Pi and Oh My Pi
 
 The official harness extension controls Cover from Pi or Oh My Pi while keeping
-the privacy engine in the local Go proxy:
+the privacy engine in the local Go proxy. Pi can install the tagged Git package
+directly:
 
 ```sh
-pi install npm:cover-harness
-# or
-omp plugin install cover-harness
+pi install git:github.com/DavidCarliez/cover@v0.1.0
 ```
 
 Configure only the providers that must go through the current Cover upstream:
@@ -349,8 +348,7 @@ at Cover when its daemon is unavailable, so requests fail locally rather than
 bypassing the proxy. Extension state is private and local at
 `~/.config/cover/harness.json`.
 
-The same package appears in the [Pi package gallery](https://pi.dev/packages).
-OMP users can also add this repository as a marketplace:
+OMP users can add this repository as a marketplace:
 
 ```sh
 omp plugin marketplace add DavidCarliez/cover

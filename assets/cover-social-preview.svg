@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640" role="img" aria-labelledby="title desc">
+  <title id="title">Cover social preview</title>
+  <desc id="desc">Cover keeps private values out of AI requests by replacing them locally and restoring them in responses.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#060a13"/>
+      <stop offset=".55" stop-color="#0a1221"/>
+      <stop offset="1" stop-color="#11182c"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M40 0H0V40" fill="none" stroke="#7dd3fc" stroke-opacity=".045"/>
+    </pattern>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="16" stdDeviation="18" flood-color="#000" flood-opacity=".38"/>
+    </filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0L10 5L0 10Z" fill="#67e8f9"/>
+    </marker>
+    <style>
+      .sans { font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+      .mono { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+    </style>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#grid)"/>
+  <circle cx="1120" cy="10" r="360" fill="#7c3aed" opacity=".09"/>
+  <circle cx="130" cy="650" r="310" fill="#06b6d4" opacity=".07"/>
+
+  <g class="sans">
+    <g transform="translate(64 55)">
+      <rect width="50" height="50" rx="14" fill="#102638" stroke="#2a6075"/>
+      <path d="M25 9L39 15V25C39 34 33 40 25 43C17 40 11 34 11 25V15Z" fill="none" stroke="url(#accent)" stroke-width="3"/>
+      <path d="M18 25L23 30L33 19" fill="none" stroke="#6ee7b7" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <text x="66" y="39" font-size="42" font-weight="830" letter-spacing="4" fill="#f8fafc">COVER</text>
+    </g>
+
+    <text x="64" y="171" font-size="49" font-weight="790" fill="#f8fafc">Fake values go out.</text>
+    <text x="64" y="229" font-size="49" font-weight="790" fill="#f8fafc">Real values come back.</text>
+    <text x="66" y="272" font-size="19" fill="#9fb0c7">A bidirectional privacy proxy for AI coding agents.</text>
+
+    <g filter="url(#shadow)">
+      <rect x="64" y="327" width="338" height="188" rx="18" fill="#0b1525" stroke="#503343"/>
+      <rect x="471" y="327" width="338" height="188" rx="18" fill="#0b1728" stroke="#28546b"/>
+      <rect x="878" y="327" width="338" height="188" rx="18" fill="#0d1925" stroke="#295441"/>
+    </g>
+
+    <circle cx="90" cy="355" r="5" fill="#fb7185"/>
+    <text x="105" y="360" font-size="12" font-weight="800" letter-spacing="1.4" fill="#fb7185">YOU SEND</text>
+    <text class="mono" x="88" y="401" font-size="15" fill="#dce8f8">Connect to <tspan fill="#fda4af">10.20.30.40</tspan></text>
+    <text class="mono" x="88" y="434" font-size="15" fill="#dce8f8">Customer: <tspan fill="#fda4af">Nike</tspan></text>
+    <text class="mono" x="88" y="467" font-size="15" fill="#dce8f8">Password: <tspan fill="#fda4af">Winter2026!</tspan></text>
+    <text x="88" y="497" font-size="12" fill="#768aa5">Private values stay local</text>
+
+    <circle cx="497" cy="355" r="5" fill="#67e8f9"/>
+    <text x="512" y="360" font-size="12" font-weight="800" letter-spacing="1.4" fill="#67e8f9">THE LLM SEES</text>
+    <text class="mono" x="495" y="401" font-size="15" fill="#dce8f8">Connect to <tspan fill="#67e8f9">10.73.151.24</tspan></text>
+    <text class="mono" x="495" y="434" font-size="15" fill="#dce8f8">Customer: <tspan fill="#67e8f9">alias-7q4n2</tspan></text>
+    <text class="mono" x="495" y="467" font-size="15" fill="#dce8f8">Password: <tspan fill="#67e8f9">9%yQKX!4f2aL</tspan></text>
+    <text x="495" y="497" font-size="12" fill="#768aa5">Only coherent fake context leaves</text>
+
+    <circle cx="904" cy="355" r="5" fill="#6ee7b7"/>
+    <text x="919" y="360" font-size="12" font-weight="800" letter-spacing="1.4" fill="#6ee7b7">YOU GET BACK</text>
+    <text class="mono" x="902" y="401" font-size="15" fill="#dce8f8">Connected to <tspan fill="#6ee7b7">10.20.30.40</tspan>.</text>
+    <text class="mono" x="902" y="434" font-size="15" fill="#dce8f8"><tspan fill="#6ee7b7">Nike</tspan> credentials accepted.</text>
+    <text class="mono" x="902" y="467" font-size="15" fill="#dce8f8">Continue with the task.</text>
+    <text x="902" y="497" font-size="12" fill="#768aa5">Original context restored locally</text>
+
+    <path d="M414 421H457" stroke="#67e8f9" stroke-width="2.5" marker-end="url(#arrow)"/>
+    <path d="M821 421H864" stroke="#67e8f9" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+    <rect x="64" y="559" width="1152" height="1" fill="#24344b"/>
+    <text x="64" y="598" font-size="15" font-weight="700" fill="#b7c5d8">Codex · Claude Code · Cursor · Pi / OMP · OpenAI-compatible APIs</text>
+    <rect x="1021" y="576" width="195" height="35" rx="17.5" fill="#102d37" stroke="#2a6273"/>
+    <text x="1118.5" y="599" text-anchor="middle" font-size="12" font-weight="800" letter-spacing=".8" fill="#67e8f9">LOCAL · REVERSIBLE</text>
+  </g>
+</svg>
