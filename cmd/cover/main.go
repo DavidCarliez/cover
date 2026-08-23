@@ -39,22 +39,51 @@ const (
 	modelURL      = "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
 )
 
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
 func main() {
 	root := &cobra.Command{
-		Use:   "cover",
-		Short: "Local secrets-redacting proxy for LLM API traffic",
+		Use:     "cover",
+		Version: version,
+		Short:   "Local secrets-redacting proxy for LLM API traffic",
 		Long: "Cover runs a local proxy that any agent can point its API base URL at.\n" +
 			"It redacts secrets, API keys, and other sensitive data from requests before\n" +
 			"forwarding them to the real LLM provider, and restores the original values\n" +
 			"in the response.",
 	}
+	root.SetVersionTemplate("cover {{.Version}}\n")
 
-	root.AddCommand(installCmd(), envCmd(), initCmd(), startCmd(), stopCmd(), restartCmd(), statusCmd(), doctorCmd(), monitorCmd(), testCmd(), inspectCmd(), modelsCmd())
+	root.AddCommand(versionCmd(), installCmd(), envCmd(), initCmd(), startCmd(), stopCmd(), restartCmd(), statusCmd(), doctorCmd(), monitorCmd(), testCmd(), inspectCmd(), modelsCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
+}
+
+func versionCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:   "version",
+		Short: "Show the Cover version",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if asJSON {
+				return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]string{
+					"version": version,
+					"commit":  commit,
+					"date":    date,
+				})
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "cover %s\n", version)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print version information as JSON")
+	return cmd
 }
 
 func installCmd() *cobra.Command {
@@ -235,7 +264,8 @@ func restartCmd() *cobra.Command {
 }
 
 func statusCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show whether the proxy is running",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -263,10 +293,15 @@ func statusCmd() *cobra.Command {
 					info.DaemonLog = filepath.Join(stateDir, "daemon.log")
 				}
 			}
-			printStatus(os.Stdout, info)
+			if asJSON {
+				return printStatusJSON(cmd.OutOrStdout(), info)
+			}
+			printStatus(cmd.OutOrStdout(), info)
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "print machine-readable status as JSON")
+	return cmd
 }
 
 func runningPID(pidPath, listenAddr string) (int, bool) {

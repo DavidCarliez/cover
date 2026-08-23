@@ -1,0 +1,47 @@
+version: 2
+
+project_name: cover
+
+builds:
+  - id: cover
+    main: ./cmd/cover
+    binary: cover
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+
+archives:
+  - id: cover
+    ids:
+      - cover
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  disable: true
+
+release:
+  prerelease: auto
+  header: |
+    Cover {{ .Tag }}
+
+    Local privacy proxy for AI coding agents and LLM clients. Download the
+    archive for your platform and verify it with `checksums.txt`.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/url"
@@ -81,6 +82,30 @@ type statusDisplay struct {
 	LogFile   string
 	PID       int
 	DaemonLog string
+}
+
+type statusJSON struct {
+	Running   bool   `json:"running"`
+	PID       int    `json:"pid,omitempty"`
+	Listen    string `json:"listen"`
+	BaseURL   string `json:"base_url"`
+	Upstream  string `json:"upstream"`
+	LogFile   string `json:"log_file"`
+	DaemonLog string `json:"daemon_log,omitempty"`
+}
+
+func printStatusJSON(w io.Writer, info statusDisplay) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(statusJSON{
+		Running:   info.Running,
+		PID:       info.PID,
+		Listen:    info.Listen,
+		BaseURL:   "http://" + info.Listen,
+		Upstream:  safeUpstreamDisplay(info.Upstream),
+		LogFile:   info.LogFile,
+		DaemonLog: info.DaemonLog,
+	})
 }
 
 func printStatus(w io.Writer, info statusDisplay) {

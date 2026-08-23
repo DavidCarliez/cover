@@ -38,6 +38,7 @@ By participating, you agree to uphold it.
 
    ```sh
    go test -race -count=1 ./...
+   npm test --prefix integrations/harness
    ```
 
    CI runs the same command on every push and pull request (see
@@ -85,6 +86,7 @@ By participating, you agree to uphold it.
 | `internal/llamacpp/` | Optional local LLM fallback detector |
 | `internal/config/` | Config loading and validation |
 | `configs/` | Example configuration |
+| `integrations/harness/` | Shared Pi and Oh My Pi extension package |
 
 ## Adding a New Secret Detector
 

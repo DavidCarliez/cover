@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,32 @@ func TestStatusNeverPrintsUpstreamCredentials(t *testing.T) {
 	for _, secret := range []string{"user", "password", "credential", "secret"} {
 		if strings.Contains(out.String(), secret) {
 			t.Fatalf("status exposed %q: %s", secret, out.String())
+		}
+	}
+}
+
+func TestStatusJSONIsMachineReadableAndSafe(t *testing.T) {
+	var out bytes.Buffer
+	err := printStatusJSON(&out, statusDisplay{
+		Running:  true,
+		PID:      42,
+		Listen:   "127.0.0.1:8317",
+		Upstream: "https://user:password@router.example/credential/path?q=secret",
+		LogFile:  "/tmp/cover.log",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got statusJSON
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.BaseURL != "http://127.0.0.1:8317" || got.PID != 42 || !got.Running {
+		t.Fatalf("unexpected status: %+v", got)
+	}
+	for _, secret := range []string{"user", "password", "credential", "secret"} {
+		if strings.Contains(out.String(), secret) {
+			t.Fatalf("JSON status exposed %q: %s", secret, out.String())
 		}
 	}
 }

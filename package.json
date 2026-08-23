@@ -1,0 +1,19 @@
+{
+  "name": "cover-source",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:harness": "npm test --prefix integrations/harness",
+    "pack:harness": "cd integrations/harness && npm pack"
+  },
+  "pi": {
+    "extensions": [
+      "./integrations/harness/index.js"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "./integrations/harness/index.js"
+    ]
+  }
+}

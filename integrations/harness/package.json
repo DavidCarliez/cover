@@ -1,0 +1,51 @@
+{
+  "name": "cover-harness",
+  "version": "0.1.0",
+  "description": "Fail-closed Cover privacy proxy integration for Pi and Oh My Pi",
+  "type": "module",
+  "main": "./index.js",
+  "exports": "./index.js",
+  "files": [
+    "index.js",
+    "lib/",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "test:e2e": "COVER_HARNESS_E2E=1 node --test test/e2e.test.js",
+    "check": "node --check index.js && node --check lib/cover.js"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "oh-my-pi",
+    "omp",
+    "llm",
+    "privacy",
+    "redaction",
+    "pseudonymization"
+  ],
+  "author": "David Carliez",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/DavidCarliez/cover#pi-and-oh-my-pi",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DavidCarliez/cover.git",
+    "directory": "integrations/harness"
+  },
+  "bugs": "https://github.com/DavidCarliez/cover/issues",
+  "engines": {
+    "node": ">=20"
+  },
+  "pi": {
+    "extensions": [
+      "./index.js"
+    ]
+  },
+  "omp": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}

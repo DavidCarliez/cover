@@ -13,6 +13,7 @@
   <a href="#quick-start">Quick start</a> ·
   <a href="#privacy-policies">Policies</a> ·
   <a href="#inspect-diagnose-and-monitor">Monitoring</a> ·
+  <a href="#pi-and-oh-my-pi">Pi / OMP</a> ·
   <a href="#security-boundary">Security</a>
 </p>
 
@@ -60,6 +61,9 @@ curl -fsSL https://raw.githubusercontent.com/DavidCarliez/cover/main/scripts/ins
 ```
 
 Requirements: `git` and the Go version declared in [`go.mod`](go.mod).
+
+Prebuilt Linux, macOS, and Windows archives and their checksums are available
+from [GitHub Releases](https://github.com/DavidCarliez/cover/releases).
 
 For a non-interactive install:
 
@@ -109,7 +113,8 @@ configuration is documented in [`configs/config.example.yaml`](configs/config.ex
 | `cover start [--detach]` | Start Cover in the foreground or background |
 | `cover stop` | Stop the background process |
 | `cover restart` | Restart it in the background |
-| `cover status` | Show process, listener, and redacted upstream status |
+| `cover status [--json]` | Show process, listener, and redacted upstream status |
+| `cover version [--json]` | Show build version, commit, and date |
 | `cover env` | Print shell exports for configured clients |
 | `cover test` | Run a synthetic local redaction and restoration check |
 | `cover inspect request.json` | Preview exactly what Cover would forward |
@@ -314,6 +319,43 @@ client = anthropic.Anthropic(base_url="http://127.0.0.1:8317", api_key=os.enviro
 
 Cursor and other applications can use the same endpoint when they expose an
 API base URL setting. Confirm routing with `cover doctor` or `cover monitor`.
+
+### Pi and Oh My Pi
+
+The official harness extension controls Cover from Pi or Oh My Pi while keeping
+the privacy engine in the local Go proxy:
+
+```sh
+pi install npm:cover-harness
+# or
+omp plugin install cover-harness
+```
+
+Configure only the providers that must go through the current Cover upstream:
+
+```text
+/cover providers openai-codex,deepseek=/
+/cover on
+/cover doctor
+```
+
+OpenAI-family providers default to the `/v1` proxy path. `=/` selects the proxy
+root for transports such as DeepSeek that add their own request path. Use
+`/cover status`, `/cover start`, `/cover stop`, and `/cover monitor` for normal
+operation. `/cover off` restores direct provider routing.
+
+Protection is fail-closed: while enabled, configured providers remain pointed
+at Cover when its daemon is unavailable, so requests fail locally rather than
+bypassing the proxy. Extension state is private and local at
+`~/.config/cover/harness.json`.
+
+The same package appears in the [Pi package gallery](https://pi.dev/packages).
+OMP users can also add this repository as a marketplace:
+
+```sh
+omp plugin marketplace add DavidCarliez/cover
+omp plugin install cover-harness@cover
+```
 
 ## Optional local LLM detector
 

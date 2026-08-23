@@ -1,0 +1,32 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "cover",
+  "owner": {
+    "name": "David Carliez"
+  },
+  "metadata": {
+    "description": "Official Cover privacy integrations",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "cover-harness",
+      "description": "Fail-closed Cover privacy proxy integration for Pi and Oh My Pi",
+      "source": "./integrations/harness",
+      "version": "0.1.0",
+      "author": {
+        "name": "David Carliez"
+      },
+      "homepage": "https://github.com/DavidCarliez/cover",
+      "repository": "https://github.com/DavidCarliez/cover",
+      "license": "Apache-2.0",
+      "category": "security",
+      "keywords": [
+        "privacy",
+        "redaction",
+        "pseudonymization",
+        "llm"
+      ]
+    }
+  ]
+}

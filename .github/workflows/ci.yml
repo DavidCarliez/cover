@@ -22,3 +22,40 @@ jobs:
 
       - name: Run tests
         run: go test -race -count=1 ./...
+
+      - name: Test Pi and OMP package
+        run: |
+          npm run check --prefix integrations/harness
+          npm test --prefix integrations/harness
+          cd integrations/harness
+          npm pack --dry-run
+
+  harness-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install current harnesses
+        run: |
+          npm install --global @earendil-works/pi-coding-agent
+          bun add --global @oh-my-pi/pi-coding-agent
+
+      - name: Build Cover
+        run: go build -o "${RUNNER_TEMP}/cover" ./cmd/cover
+
+      - name: Run live privacy test through Pi and OMP
+        env:
+          COVER_TEST_BINARY: ${{ runner.temp }}/cover
+        run: npm run test:e2e --prefix integrations/harness

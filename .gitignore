@@ -13,6 +13,7 @@
 coverage.*
 *.coverprofile
 *.prof
+/dist/
 
 # Dependency vendoring (if used locally)
 /vendor/
