@@ -322,12 +322,11 @@ API base URL setting. Confirm routing with `cover doctor` or `cover monitor`.
 
 ### Pi and Oh My Pi
 
-The official harness extension controls Cover from Pi or Oh My Pi while keeping
-the privacy engine in the local Go proxy. Pi can install the tagged Git package
-directly:
+The official `cover-plugin` controls Cover from Pi or Oh My Pi while keeping
+the privacy engine in the local Go proxy:
 
 ```sh
-pi install git:github.com/DavidCarliez/cover@v0.1.0
+pi install npm:cover-plugin
 ```
 
 Configure only the providers that must go through the current Cover upstream:
@@ -352,7 +351,7 @@ OMP users can add this repository as a marketplace:
 
 ```sh
 omp plugin marketplace add DavidCarliez/cover
-omp plugin install cover-harness@cover
+omp plugin install cover-plugin@cover
 ```
 
 ## Optional local LLM detector

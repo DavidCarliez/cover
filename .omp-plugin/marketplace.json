@@ -10,8 +10,8 @@
   },
   "plugins": [
     {
-      "name": "cover-harness",
-      "description": "Fail-closed Cover privacy proxy integration for Pi and Oh My Pi",
+      "name": "cover-plugin",
+      "description": "Official fail-closed Cover privacy plugin for Pi and Oh My Pi",
       "source": "./integrations/harness",
       "version": "0.1.0",
       "author": {

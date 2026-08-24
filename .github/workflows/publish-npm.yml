@@ -1,4 +1,4 @@
-name: Publish harness package
+name: Publish plugin package
 
 on:
   workflow_dispatch:

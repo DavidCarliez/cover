@@ -54,7 +54,7 @@ async function run(command, args, env, cwd) {
 test("Pi and OMP send protected values through Cover and receive restored output", { skip: !enabled, timeout: 90000 }, async (t) => {
   const coverBinary = process.env.COVER_TEST_BINARY;
   assert.ok(coverBinary, "COVER_TEST_BINARY must point to a built Cover binary");
-  const root = mkdtempSync(join(tmpdir(), "cover-harness-e2e-"));
+  const root = mkdtempSync(join(tmpdir(), "cover-plugin-e2e-"));
   const upstreamPort = await freePort();
   const coverPort = await freePort();
   const received = [];

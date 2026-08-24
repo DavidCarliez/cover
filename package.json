@@ -3,8 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:harness": "npm test --prefix integrations/harness",
-    "pack:harness": "cd integrations/harness && npm pack"
+    "test:plugin": "npm test --prefix integrations/harness",
+    "pack:plugin": "cd integrations/harness && npm pack"
   },
   "pi": {
     "extensions": [

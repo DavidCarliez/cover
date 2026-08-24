@@ -1,7 +1,7 @@
 {
-  "name": "cover-harness",
+  "name": "cover-plugin",
   "version": "0.1.0",
-  "description": "Fail-closed Cover privacy proxy integration for Pi and Oh My Pi",
+  "description": "Official fail-closed Cover privacy plugin for Pi and Oh My Pi",
   "type": "module",
   "main": "./index.js",
   "exports": "./index.js",

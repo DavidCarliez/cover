@@ -1,18 +1,23 @@
-# Cover for Pi and Oh My Pi
+# Cover Plugin for Pi and Oh My Pi
 
-This package connects [Cover](https://github.com/DavidCarliez/cover) to the Pi
+`cover-plugin` connects [Cover](https://github.com/DavidCarliez/cover) to the Pi
 and Oh My Pi model-provider systems. Cover remains the local privacy boundary;
-the extension only manages provider routing, health, and commands.
+the plugin only manages provider routing, health, and commands.
 
 Install Cover first, then install the extension:
 
 ```sh
-pi install npm:cover-harness
-# or
-omp plugin install cover-harness
+pi install npm:cover-plugin
+
+# Oh My Pi: install directly from npm
+omp plugin install cover-plugin
+
+# Or use the Cover marketplace
+omp plugin marketplace add DavidCarliez/cover
+omp plugin install cover-plugin@cover
 ```
 
-Inside the harness, choose exactly which providers must use Cover:
+Inside Pi or Oh My Pi, choose exactly which providers must use Cover:
 
 ```text
 /cover providers openai-codex,deepseek=/

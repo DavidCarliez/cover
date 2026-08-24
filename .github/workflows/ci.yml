@@ -23,7 +23,7 @@ jobs:
       - name: Run tests
         run: go test -race -count=1 ./...
 
-      - name: Test Pi and OMP package
+      - name: Test Pi and OMP plugin
         run: |
           npm run check --prefix integrations/harness
           npm test --prefix integrations/harness
