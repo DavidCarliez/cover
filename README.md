@@ -27,6 +27,12 @@ context; your agent and tools keep working with the real environment.
   <img src="assets/cover-roundtrip.svg" alt="Cover changes private values into protected replacements before an LLM request, then restores reversible values in the response. It also supports placeholder, mask, redact, block, and allow policies." width="100%">
 </p>
 
+<p align="center">
+  <img src="assets/cover-demo.gif" alt="Cover sends pseudonyms instead of a private customer name and IP address, then restores the originals locally in the response." width="100%">
+</p>
+
+<p align="center"><sub>Real Cover round trip with synthetic values and a local echo upstream; no request leaves the machine.</sub></p>
+
 Use reversible `pseudonymize` or `placeholder` rules when the conversation must
 keep working end to end. Use one-way `mask` or `redact` rules when restoration
 is unnecessary, `block` to stop a request locally, and `allow` for an explicit
@@ -37,14 +43,17 @@ Pi**, and **OpenAI- or Anthropic-compatible SDKs and routers**.
 
 ## Install
 
-The installer clones Cover, builds it with Go, installs it to
+The installer downloads the release for your OS and CPU, verifies it against
+the published SHA-256 checksums, installs it atomically to
 `~/.local/bin/cover`, configures selected clients, and starts the proxy.
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/DavidCarliez/cover/main/scripts/install.sh | bash
 ```
 
-Requirements: `git` and the Go version declared in [`go.mod`](go.mod).
+No Go toolchain or Git checkout is required. You only need `curl`, an archive
+extractor (`tar` on Linux/macOS or `unzip` on Windows), and `sha256sum`,
+`shasum`, or `openssl` for verification.
 
 Prebuilt Linux, macOS, and Windows archives and their checksums are available
 from [GitHub Releases](https://github.com/DavidCarliez/cover/releases).
@@ -52,8 +61,16 @@ from [GitHub Releases](https://github.com/DavidCarliez/cover/releases).
 For a non-interactive install:
 
 ```sh
-COVER_AGENTS=openai,claude \
-  curl -fsSL https://raw.githubusercontent.com/DavidCarliez/cover/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/DavidCarliez/cover/main/scripts/install.sh | \
+  COVER_AGENTS=openai,claude bash
+```
+
+Pin a release or install only the binary with environment variables applied to
+the `bash` process:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/DavidCarliez/cover/main/scripts/install.sh | \
+  COVER_VERSION=v0.1.0 COVER_SKIP_SETUP=1 bash
 ```
 
 <details>

@@ -98,7 +98,7 @@ func installCmd() *cobra.Command {
 		Short: "Configure Cover for your agents, start the proxy, and set up shell exports",
 		Long: "Interactive setup that writes config, starts the proxy in the background,\n" +
 			"adds BASE_URL exports to your shell profile, and prints a ready summary.\n\n" +
-			"Usually invoked by scripts/install.sh after building the binary.",
+			"Usually invoked by scripts/install.sh after installing a verified release binary.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			var parsed []install.Agent
 			for _, a := range agents {

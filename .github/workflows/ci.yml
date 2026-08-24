@@ -23,6 +23,9 @@ jobs:
       - name: Run tests
         run: go test -race -count=1 ./...
 
+      - name: Test release installer
+        run: bash scripts/install_test.sh
+
       - name: Test Pi and OMP plugin
         run: |
           npm run check --prefix integrations/harness
