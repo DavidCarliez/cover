@@ -27,12 +27,6 @@ context; your agent and tools keep working with the real environment.
   <img src="assets/cover-roundtrip.svg" alt="Cover changes private values into protected replacements before an LLM request, then restores reversible values in the response. It also supports placeholder, mask, redact, block, and allow policies." width="100%">
 </p>
 
-<p align="center">
-  <img src="assets/cover-demo.gif" alt="Cover sends pseudonyms instead of a private customer name and IP address, then restores the originals locally in the response." width="100%">
-</p>
-
-<p align="center"><sub>Real Cover round trip with synthetic values and a local echo upstream; no request leaves the machine.</sub></p>
-
 Use reversible `pseudonymize` or `placeholder` rules when the conversation must
 keep working end to end. Use one-way `mask` or `redact` rules when restoration
 is unnecessary, `block` to stop a request locally, and `allow` for an explicit
