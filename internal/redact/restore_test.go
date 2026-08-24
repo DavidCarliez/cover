@@ -84,6 +84,34 @@ func TestRestoreSSEEvent_JSONEscapesQuotes(t *testing.T) {
 	}
 }
 
+func TestRestoreSSEEventPreservesCRLF(t *testing.T) {
+	r := newTestRedactor(t)
+	secret := "customer@example.com"
+	redacted, _ := r.Redact([]byte(secret))
+	fake := string(redacted)
+	payload, err := json.Marshal(map[string]string{"text": fake})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event := append([]byte("event: message\r\ndata: "), payload...)
+	event = append(event, []byte("\r\n\r\n")...)
+
+	restored := r.RestoreSSEEvent(event)
+	if strings.Contains(strings.ReplaceAll(string(restored), "\r\n", ""), "\n") {
+		t.Fatalf("introduced a bare LF: %q", restored)
+	}
+	if !strings.HasSuffix(string(restored), "\r\n\r\n") {
+		t.Fatalf("lost CRLF event terminator: %q", restored)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(bytesTrimToDataJSON(restored), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["text"] != secret {
+		t.Fatalf("text=%q, want %q", got["text"], secret)
+	}
+}
+
 func bytesTrimToDataJSON(event []byte) []byte {
 	for _, line := range strings.Split(string(event), "\n") {
 		if strings.HasPrefix(line, "data:") {

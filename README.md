@@ -99,7 +99,8 @@ GOOS=windows GOARCH=amd64 go build -o cover.exe ./cmd/cover
 | Diagnostics | `cover doctor` verifies policy, daemon health, local fail-closed behavior, and Codex routing |
 | Monitoring | Metadata-only audit and monitor views, plus explicit live-only inspection of caught and forwarded content |
 | Proxy hardening | Loopback-by-default listeners, body and stream limits, generic safe errors, and fail-closed parsing |
-| Codex compatibility | Responses API and router configuration, compression checks, safe SSE restoration, and immutable `encrypted_content` fields |
+| Streaming compatibility | OpenAI Responses, Chat Completions, and Anthropic SSE restoration, including replacements split across consecutive delta events |
+| Codex compatibility | Responses API and router configuration, compression checks, and immutable `encrypted_content` fields |
 | Optional semantic pass | A local llama.cpp detector can inspect free-form text that regular expressions miss |
 
 ## Quick start

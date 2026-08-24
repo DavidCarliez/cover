@@ -74,18 +74,42 @@ func (r *Redactor) RestoreSSEEvent(event []byte) []byte {
 }
 
 func (r *Redactor) RestoreSSEEventForSession(event []byte, session string) []byte {
-	lines := bytes.Split(event, []byte("\n"))
-	for i, line := range lines {
-		if !bytes.HasPrefix(line, []byte("data:")) {
-			continue
+	var out bytes.Buffer
+	for start := 0; start < len(event); {
+		end := start
+		for end < len(event) && event[end] != '\r' && event[end] != '\n' {
+			end++
 		}
-		payload := bytes.TrimSpace(line[5:])
-		if len(payload) == 0 || (payload[0] != '{' && payload[0] != '[') {
-			continue
+		line := event[start:end]
+		next := end
+		if next < len(event) {
+			if event[next] == '\r' && next+1 < len(event) && event[next+1] == '\n' {
+				next += 2
+			} else {
+				next++
+			}
 		}
-		lines[i] = append([]byte("data: "), r.restoreJSONOrRaw(payload, session)...)
+
+		if bytes.HasPrefix(line, []byte("data:")) {
+			rawPayload := line[5:]
+			payload := bytes.TrimSpace(rawPayload)
+			if len(payload) > 0 && (payload[0] == '{' || payload[0] == '[') {
+				leftTrim := bytes.Index(rawPayload, payload)
+				payloadStart := 5 + leftTrim
+				out.Write(line[:payloadStart])
+				out.Write(r.restoreJSONOrRaw(payload, session))
+				out.Write(line[payloadStart+len(payload):])
+				out.Write(event[end:next])
+				start = next
+				continue
+			}
+		}
+
+		out.Write(line)
+		out.Write(event[end:next])
+		start = next
 	}
-	return bytes.Join(lines, []byte("\n"))
+	return out.Bytes()
 }
 
 func (r *Redactor) restoreSSE(body []byte, session string) []byte {
