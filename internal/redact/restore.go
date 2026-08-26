@@ -3,6 +3,7 @@ package redact
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 )
 
 // RestoreResponse replaces placeholder tokens in an upstream response body.
@@ -24,48 +25,72 @@ func isSSEContentType(contentType string) bool {
 }
 
 func (r *Redactor) restoreJSONOrRaw(body []byte, session string) []byte {
+	snapshot := r.store.restorationSnapshot(session)
+	if snapshot == nil {
+		return body
+	}
+	return r.restoreJSONOrRawWithSnapshot(body, snapshot)
+}
+
+func (r *Redactor) restoreJSONOrRawWithSnapshot(body []byte, snapshot *restorationSnapshot) []byte {
 	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[') {
-		return r.RestoreForSession(body, session)
+	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[' && trimmed[0] != '"') {
+		restored, _ := snapshot.restoreBytes(body)
+		return restored
 	}
 
+	dec := json.NewDecoder(bytes.NewReader(trimmed))
+	dec.UseNumber()
 	var data any
-	if err := json.Unmarshal(trimmed, &data); err != nil {
-		return r.RestoreForSession(body, session)
+	if err := dec.Decode(&data); err != nil {
+		restored, _ := snapshot.restoreBytes(body)
+		return restored
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		restored, _ := snapshot.restoreBytes(body)
+		return restored
 	}
 
-	walked := r.walkRestoreStrings(data, session)
+	walked, changed := r.walkRestoreStrings(data, snapshot)
+	if !changed {
+		return body
+	}
 	out, err := json.Marshal(walked)
 	if err != nil {
-		return r.RestoreForSession(body, session)
+		restored, _ := snapshot.restoreBytes(body)
+		return restored
 	}
 	return out
 }
 
-func (r *Redactor) walkRestoreStrings(v any, session string) any {
+func (r *Redactor) walkRestoreStrings(v any, snapshot *restorationSnapshot) (any, bool) {
 	switch val := v.(type) {
 	case string:
-		return r.restoreString(val, session)
+		restored, changed := snapshot.restoreString(val)
+		return restored, changed
 	case map[string]any:
+		changed := false
 		for k, vv := range val {
 			if immutableProtocolField(k) {
 				continue
 			}
-			val[k] = r.walkRestoreStrings(vv, session)
+			restored, fieldChanged := r.walkRestoreStrings(vv, snapshot)
+			val[k] = restored
+			changed = changed || fieldChanged
 		}
-		return val
+		return val, changed
 	case []any:
+		changed := false
 		for i, vv := range val {
-			val[i] = r.walkRestoreStrings(vv, session)
+			restored, itemChanged := r.walkRestoreStrings(vv, snapshot)
+			val[i] = restored
+			changed = changed || itemChanged
 		}
-		return val
+		return val, changed
 	default:
-		return v
+		return v, false
 	}
-}
-
-func (r *Redactor) restoreString(s, session string) string {
-	return string(r.RestoreForSession([]byte(s), session))
 }
 
 // RestoreSSEEvent restores placeholders inside a single SSE event block.

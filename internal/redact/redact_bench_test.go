@@ -1,10 +1,61 @@
 package redact
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
+
+func benchmarkMappedRedactor(b *testing.B, entries int) (*Redactor, string) {
+	b.Helper()
+	store := NewStoreWithOptions(StoreOptions{MaxEntriesPerSession: entries + 1})
+	target := ""
+	for i := 0; i < entries; i++ {
+		original := fmt.Sprintf("secret-%d", i)
+		fake, err := store.Map("benchmark", original, nil, func(int) (string, error) {
+			return fmt.Sprintf("COVER_FAKE_%08d", i), nil
+		})
+		if err != nil {
+			b.Fatal(err)
+		}
+		if i == entries/2 {
+			target = fake
+		}
+	}
+	return New(store, 0, RedactorOptions{}), target
+}
+
+func BenchmarkRestoreForSession_MappingScale(b *testing.B) {
+	for _, entries := range []int{1, 100, 1000, 5000} {
+		b.Run(fmt.Sprintf("entries_%d", entries), func(b *testing.B) {
+			r, target := benchmarkMappedRedactor(b, entries)
+			data := []byte("delta before " + target + " after")
+			// Build the lazy snapshot outside the timed region.
+			r.RestoreForSession(data, "benchmark")
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				r.RestoreForSession(data, "benchmark")
+			}
+		})
+	}
+}
+
+func BenchmarkSafeStreamCut_MappingScale(b *testing.B) {
+	for _, entries := range []int{1, 100, 1000, 5000} {
+		b.Run(fmt.Sprintf("entries_%d", entries), func(b *testing.B) {
+			r, _ := benchmarkMappedRedactor(b, entries)
+			data := []byte("ordinary streaming response text without a mapping")
+			r.SafeStreamCut(data, "benchmark")
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				r.SafeStreamCut(data, "benchmark")
+			}
+		})
+	}
+}
 
 func benchRedactor(b *testing.B) *Redactor {
 	d, err := detectors.NewRegexDetector(detectors.BuiltinCategories(), nil)

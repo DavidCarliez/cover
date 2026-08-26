@@ -83,6 +83,35 @@ func TestProxy_RedactsRequestAndRestoresResponse(t *testing.T) {
 	}
 }
 
+func TestProxyPreservesUnchangedJSONResponseExactly(t *testing.T) {
+	want := []byte(" \n { \"large\" : 9007199254740993, \"text\" : \"unchanged\" } \n")
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(want)
+	}))
+	defer upstream.Close()
+
+	p, err := New(upstream.URL, newTestRedactor(t), nil, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(p)
+	defer front.Close()
+
+	response, err := http.Post(front.URL+"/v1/chat", "application/json", strings.NewReader(`{"text":"hello"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	got, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("proxy rewrote unchanged response:\n got: %q\nwant: %q", got, want)
+	}
+}
+
 // TestProxy_RestoresSSEStream verifies that a placeholder token streamed back
 // from the upstream over text/event-stream, split across multiple flushed
 // writes, is restored to the original secret in the client response.

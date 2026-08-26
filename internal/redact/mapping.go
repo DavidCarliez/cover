@@ -31,6 +31,30 @@ type sessionMappings struct {
 	forward map[string]string
 	reverse map[string]string
 	updated time.Time
+	restore *restorationSnapshot
+}
+
+// restorationSnapshot is immutable after construction, so callers can use it
+// without holding Store.mu. A session invalidates its snapshot whenever a new
+// mapping is added.
+type restorationSnapshot struct {
+	replacer   *strings.Replacer
+	fakes      [][]byte
+	maxFakeLen int
+}
+
+func (s *restorationSnapshot) restoreBytes(data []byte) ([]byte, bool) {
+	input := string(data)
+	restored := s.replacer.Replace(input)
+	if restored == input {
+		return data, false
+	}
+	return []byte(restored), true
+}
+
+func (s *restorationSnapshot) restoreString(value string) (string, bool) {
+	restored := s.replacer.Replace(value)
+	return restored, restored != value
 }
 
 // Store owns bounded, in-memory-only, bijective mappings separated by session.
@@ -134,6 +158,7 @@ func (s *Store) Map(session, original string, occupied map[string]struct{}, gene
 		}
 		m.forward[original] = fake
 		m.reverse[fake] = original
+		m.restore = nil
 		return fake, nil
 	}
 	return "", fmt.Errorf("could not allocate collision-free replacement")
@@ -191,17 +216,53 @@ func (s *Store) ReverseMappings(session string) map[string]string {
 }
 
 func (s *Store) MaxFakeLen(session string) int {
+	snapshot := s.restorationSnapshot(session)
+	if snapshot == nil {
+		return 0
+	}
+	return snapshot.maxFakeLen
+}
+
+func (s *Store) restorationSnapshot(session string) *restorationSnapshot {
+	id := normalizeSession(session)
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	max := PlaceholderMaxLen
-	if m := s.sessions[normalizeSession(session)]; m != nil {
-		for fake := range m.reverse {
-			if len(fake) > max {
-				max = len(fake)
-			}
+	m := s.sessions[id]
+	if m == nil || len(m.reverse) == 0 {
+		s.mu.RUnlock()
+		return nil
+	}
+	if m.restore != nil {
+		snapshot := m.restore
+		s.mu.RUnlock()
+		return snapshot
+	}
+	s.mu.RUnlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	m = s.sessions[id]
+	if m == nil || len(m.reverse) == 0 {
+		return nil
+	}
+	if m.restore != nil {
+		return m.restore
+	}
+
+	keys := sortedFakeKeys(m.reverse)
+	pairs := make([]string, 0, len(keys)*2)
+	fakes := make([][]byte, 0, len(keys))
+	maxFakeLen := 0
+	for _, fake := range keys {
+		pairs = append(pairs, fake, m.reverse[fake])
+		fakes = append(fakes, []byte(fake))
+		if len(fake) > maxFakeLen {
+			maxFakeLen = len(fake)
 		}
 	}
-	return max
+	m.restore = &restorationSnapshot{
+		replacer: strings.NewReplacer(pairs...), fakes: fakes, maxFakeLen: maxFakeLen,
+	}
+	return m.restore
 }
 
 func (s *Store) SessionStats() (sessions, entries int) {

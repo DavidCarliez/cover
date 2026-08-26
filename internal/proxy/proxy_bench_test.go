@@ -36,14 +36,14 @@ func benchProxy(b *testing.B) (*Proxy, []byte) {
 
 func BenchmarkProxy_ServeHTTP_Chat20Msg(b *testing.B) {
 	p, body := benchProxy(b)
-	req, err := http.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
-	if err != nil {
-		b.Fatalf("NewRequest: %v", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		req, err := http.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+		if err != nil {
+			b.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		p.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
@@ -66,6 +66,11 @@ func BenchmarkProxy_ServeHTTP_Chat20Msg_Cached(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
+		req, err := http.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(string(body)))
+		if err != nil {
+			b.Fatalf("NewRequest: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
 		rec := httptest.NewRecorder()
 		p.ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {

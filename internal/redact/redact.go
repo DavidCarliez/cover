@@ -143,19 +143,20 @@ func (r *Redactor) Restore(data []byte) []byte {
 }
 
 func (r *Redactor) RestoreForSession(data []byte, session string) []byte {
-	mappings := r.store.ReverseMappings(session)
-	if len(mappings) == 0 {
+	snapshot := r.store.restorationSnapshot(session)
+	if snapshot == nil {
 		return data
 	}
-	pairs := make([]string, 0, len(mappings)*2)
-	for _, fake := range sortedFakeKeys(mappings) {
-		pairs = append(pairs, fake, mappings[fake])
-	}
-	return []byte(strings.NewReplacer(pairs...).Replace(string(data)))
+	restored, _ := snapshot.restoreBytes(data)
+	return restored
 }
 
 func (r *Redactor) StreamReserve(session string) int {
-	max := r.store.MaxFakeLen(session)
+	snapshot := r.store.restorationSnapshot(session)
+	if snapshot == nil {
+		return 0
+	}
+	max := snapshot.maxFakeLen
 	if max <= 1 {
 		return 0
 	}
@@ -164,16 +165,27 @@ func (r *Redactor) StreamReserve(session string) int {
 
 func (r *Redactor) EndSession(session string) { r.store.DeleteSession(session) }
 
+// HasMappingsForSession reports whether response restoration has any work for
+// session. Streaming writers use it to preserve and forward untouched events
+// immediately when a request created no reversible mappings.
+func (r *Redactor) HasMappingsForSession(session string) bool {
+	return r.store.restorationSnapshot(session) != nil
+}
+
 func (r *Redactor) SafeStreamCut(data []byte, session string) int {
-	reserve := r.StreamReserve(session)
+	snapshot := r.store.restorationSnapshot(session)
+	if snapshot == nil {
+		return len(data)
+	}
+	reserve := snapshot.maxFakeLen - 1
 	if len(data) <= reserve {
 		return 0
 	}
 	cut := len(data) - reserve
-	for fake := range r.store.ReverseMappings(session) {
+	for _, fake := range snapshot.fakes {
 		start := 0
 		for {
-			i := bytes.Index(data[start:], []byte(fake))
+			i := bytes.Index(data[start:], fake)
 			if i < 0 {
 				break
 			}

@@ -1,12 +1,119 @@
 package redact
 
 import (
+	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
+
+func TestRestoreResponsePreservesUnchangedJSONBytes(t *testing.T) {
+	r := New(NewStore(), 0, RedactorOptions{})
+	body := []byte(" \n { \"large\" : 9007199254740993, \"text\" : \"unchanged\" } \n")
+	if restored := r.RestoreResponse(body, "application/json"); !bytes.Equal(restored, body) {
+		t.Fatalf("unchanged response was rewritten:\n got: %q\nwant: %q", restored, body)
+	}
+
+	// An existing session mapping must not cause unrelated responses to be
+	// normalized or re-encoded.
+	_ = r.store.PlaceholderFor("customer@example.com")
+	if restored := r.RestoreResponse(body, "application/json"); !bytes.Equal(restored, body) {
+		t.Fatalf("unrelated response was rewritten:\n got: %q\nwant: %q", restored, body)
+	}
+}
+
+func TestRestoreResponsePreservesEncryptedOnlyJSONExactly(t *testing.T) {
+	r := newTestRedactor(t)
+	fake := r.store.PlaceholderFor("customer@example.com")
+	body := []byte(fmt.Sprintf(" { \"encrypted_content\" : %q, \"sequence\" : 9007199254740993 } ", fake))
+	if restored := r.RestoreResponse(body, "application/json"); !bytes.Equal(restored, body) {
+		t.Fatalf("encrypted-only response was rewritten:\n got: %q\nwant: %q", restored, body)
+	}
+}
+
+func TestRestoreResponsePreservesLargeJSONNumbersWhenRestoring(t *testing.T) {
+	r := newTestRedactor(t)
+	secret := "customer@example.com"
+	redacted, _ := r.Redact([]byte(secret))
+	body := []byte(fmt.Sprintf(`{"sequence_number":9007199254740993,"text":%q}`, redacted))
+
+	restored := r.RestoreResponse(body, "application/json")
+	if !bytes.Contains(restored, []byte(`"sequence_number":9007199254740993`)) {
+		t.Fatalf("large integer changed during restoration: %s", restored)
+	}
+	var got map[string]any
+	dec := json.NewDecoder(bytes.NewReader(restored))
+	dec.UseNumber()
+	if err := dec.Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got["text"] != secret {
+		t.Fatalf("text=%q, want %q", got["text"], secret)
+	}
+}
+
+func TestRestoreResponseSupportsTopLevelJSONString(t *testing.T) {
+	r := newTestRedactor(t)
+	secret := `api_key = "anasbdn198h291ebkhjabsdbbasbd"`
+	fake := r.store.PlaceholderFor(secret)
+	body, err := json.Marshal(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := r.RestoreResponse(body, "application/json")
+	var got string
+	if err := json.Unmarshal(restored, &got); err != nil {
+		t.Fatalf("restored scalar is invalid JSON: %v: %s", err, restored)
+	}
+	if got != secret {
+		t.Fatalf("got %q, want %q", got, secret)
+	}
+}
+
+func TestRestorationSnapshotInvalidatesWhenMappingIsAdded(t *testing.T) {
+	r := New(NewStore(), 0, RedactorOptions{})
+	first := r.store.PlaceholderFor("first-secret")
+	if got := string(r.Restore([]byte(first))); got != "first-secret" {
+		t.Fatalf("first restoration=%q", got)
+	}
+
+	second := r.store.PlaceholderFor("second-secret")
+	if got := string(r.Restore([]byte(first + "/" + second))); got != "first-secret/second-secret" {
+		t.Fatalf("snapshot was not invalidated: %q", got)
+	}
+}
+
+func TestRestorationSnapshotSupportsConcurrentReadsAndInvalidation(t *testing.T) {
+	r := New(NewStore(), 0, RedactorOptions{})
+	first := r.store.PlaceholderFor("first-secret")
+	_ = r.Restore([]byte(first)) // Build the first snapshot before concurrency.
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 100; i++ {
+			r.store.PlaceholderFor(fmt.Sprintf("new-secret-%d", i))
+		}
+	}()
+	for worker := 0; worker < 8; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 500; i++ {
+				if got := string(r.Restore([]byte(first))); got != "first-secret" {
+					t.Errorf("concurrent restoration=%q", got)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
 
 func TestRestoreResponse_JSONEscapesQuotes(t *testing.T) {
 	d, err := detectors.NewRegexDetector([]string{"generic_api_key_assignment"}, nil)

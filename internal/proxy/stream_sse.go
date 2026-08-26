@@ -107,6 +107,9 @@ func (rw *SSERestoringWriter) Close() error {
 }
 
 func (rw *SSERestoringWriter) writeEvent(event []byte) error {
+	if !rw.redactor.HasMappingsForSession(rw.session) {
+		return rw.emit(event)
+	}
 	fragment, ok := parseSSEFragmentEvent(event)
 	if !ok {
 		if err := rw.flushPending(); err != nil {
@@ -207,7 +210,16 @@ func parseSSEFragmentEvent(event []byte) (*sseFragmentEvent, bool) {
 		rawData := line[5:]
 		data := bytes.TrimSpace(rawData)
 		if len(data) > 0 && (data[0] == '{' || data[0] == '[') {
-			if payloadStart >= 0 || json.Unmarshal(data, &payload) != nil {
+			if payloadStart >= 0 {
+				return nil, false
+			}
+			dec := json.NewDecoder(bytes.NewReader(data))
+			dec.UseNumber()
+			if dec.Decode(&payload) != nil {
+				return nil, false
+			}
+			var trailing any
+			if dec.Decode(&trailing) != io.EOF {
 				return nil, false
 			}
 			leftTrim := bytes.Index(rawData, data)

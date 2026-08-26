@@ -48,6 +48,27 @@ func TestSSERestoringWriterRestoresResponseDeltaAcrossEvents(t *testing.T) {
 	}
 }
 
+func TestSSERestoringWriterPreservesEventsWithoutMappingsExactly(t *testing.T) {
+	r := redact.New(redact.NewStore(), 0, redact.RedactorOptions{})
+	stream := "event: response.output_text.delta\r\ndata: { \"type\": \"response.output_text.delta\", \"delta\": \"hello\", \"sequence_number\": 9007199254740993 }\r\n\r\n"
+	out := restoreSSEForTest(t, r, "no-mappings", stream)
+	if out != stream {
+		t.Fatalf("event without mappings changed:\n got: %q\nwant: %q", out, stream)
+	}
+}
+
+func TestSSERestoringWriterPreservesLargeNumericMetadata(t *testing.T) {
+	r, fake := aliasPseudonym(t, "large-number")
+	stream := fmt.Sprintf("data: {\"type\":\"response.output_text.delta\",\"delta\":%q,\"sequence_number\":9007199254740993}\n\n", fake)
+	out := restoreSSEForTest(t, r, "large-number", stream)
+	if !strings.Contains(out, `"sequence_number":9007199254740993`) {
+		t.Fatalf("large numeric metadata changed: %s", out)
+	}
+	if got := joinedTopLevelDeltas(t, out); got != "CUSTOMER-ALPHA" {
+		t.Fatalf("joined delta=%q; stream=%q", got, out)
+	}
+}
+
 func TestSSERestoringWriterRestoresFunctionArgumentsAcrossEvents(t *testing.T) {
 	const original = "10.20.30.40"
 	r := policyProxyRedactor(t, detectors.CustomPattern{
