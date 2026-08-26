@@ -1,6 +1,6 @@
 <h1 align="center">Cover</h1>
 
-<p align="center"><strong>Fake values go out. Real values come back.</strong></p>
+<p align="center"><strong>Keep private data, internal infrastructure and secrets out of cloud coding agents without breaking your workflow.</strong></p>
 
 <p align="center">
   <a href="https://github.com/DavidCarliez/cover/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/DavidCarliez/cover/actions/workflows/ci.yml/badge.svg"></a>
