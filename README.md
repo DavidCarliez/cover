@@ -408,8 +408,10 @@ Data can still leave the machine when it appears in:
 - traffic from a client that bypasses Cover.
 
 Inline image handling is configurable with `media.images: allow`, `warn`, or
-`block`. Cover does not inspect pixels, and no media policy can recognize every
-possible encoding.
+`block`. Under `allow` and `warn`, encoded image data, image URLs, and image
+file IDs pass through unchanged because scanning encoded image data as text
+can corrupt it. Cover does not inspect pixels, and no media policy can
+recognize every possible encoding.
 
 Cover rejects non-loopback listeners unless `network.allow_remote: true` is
 explicitly configured. If Cover and its upstream router run on different

@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -391,6 +392,84 @@ func TestMediaPolicy(t *testing.T) {
 	warned, err := r.Transform(body, "s", false, "warn")
 	if err != nil || warned.Blocked || len(warned.Warnings) == 0 {
 		t.Fatalf("image warn policy failed: %+v %v", warned, err)
+	}
+}
+
+func imagePolicyRedactor(t *testing.T) *Redactor {
+	t.Helper()
+	d, err := detectors.NewRegexDetector([]string{"phone_intl"}, []detectors.CustomPattern{{
+		Name: "private_ip", Pattern: `10\.20\.30\.40`, Action: "pseudonymize", Generator: "ipv4",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return New(NewStore(), 0, RedactorOptions{}, d)
+}
+
+func TestImageDataURLIsOpaqueWhileTextRemainsProtected(t *testing.T) {
+	// This is valid Base64 and deliberately contains thousands of substrings
+	// that match the international-phone detector. Before image fields were
+	// opaque, each match was replaced and the image became invalid Base64.
+	encoded := strings.Repeat("+1234567", 32768)
+	if _, err := base64.StdEncoding.DecodeString(encoded); err != nil {
+		t.Fatalf("test payload is not valid Base64: %v", err)
+	}
+	imageURL := "data:image/png;base64," + encoded
+	body, err := json.Marshal(map[string]any{
+		"input": []any{
+			map[string]any{"type": "input_image", "image_url": imageURL},
+			map[string]any{"type": "input_text", "text": "connect to 10.20.30.40"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := imagePolicyRedactor(t).TransformWithCaptures(body, "image", false, "allow")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Transformed != 1 || len(result.Captures) != 1 || result.Captures[0].Category != "private_ip" {
+		t.Fatalf("image content was detected or surrounding text was missed: %+v", result)
+	}
+	var transformed map[string]any
+	if err := json.Unmarshal(result.Body, &transformed); err != nil {
+		t.Fatal(err)
+	}
+	input := transformed["input"].([]any)
+	gotImage := input[0].(map[string]any)["image_url"].(string)
+	if gotImage != imageURL {
+		t.Fatal("Cover changed the image data URL")
+	}
+	if _, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(gotImage, "data:image/png;base64,")); err != nil {
+		t.Fatalf("Cover produced invalid Base64: %v", err)
+	}
+	if strings.Contains(input[1].(map[string]any)["text"].(string), "10.20.30.40") {
+		t.Fatal("surrounding private text was not protected")
+	}
+}
+
+func TestOpaqueImageProtocolShapesPassUnchanged(t *testing.T) {
+	tests := map[string][]byte{
+		"direct data URL":         []byte(` {"output":[{"blob":"data:image/png;base64,+1234567"}]} `),
+		"nested image URL":        []byte(` {"messages":[{"content":[{"type":"image_url","image_url":{"url":"https://example.com/image.png?phone=+1234567"}}]}]} `),
+		"image file ID":           []byte(` {"input":[{"type":"input_image","file_id":"+1234567"}]} `),
+		"image generation result": []byte(` {"output":[{"type":"image_generation_call","result":"+1234567"}]} `),
+		"Images API Base64":       []byte(` {"data":[{"b64_json":"+1234567"}]} `),
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			result, err := imagePolicyRedactor(t).Transform(body, "image", false, "warn")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Transformed != 0 || result.Blocked || len(result.Warnings) != 1 {
+				t.Fatalf("unexpected media result: %+v", result)
+			}
+			if string(result.Body) != string(body) {
+				t.Fatalf("opaque image value changed:\n got: %q\nwant: %q", result.Body, body)
+			}
+		})
 	}
 }
 

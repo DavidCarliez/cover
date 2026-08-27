@@ -1,7 +1,9 @@
 package redact
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/DavidCarliez/cover/internal/redact/detectors"
@@ -54,6 +56,30 @@ func BenchmarkSafeStreamCut_MappingScale(b *testing.B) {
 				r.SafeStreamCut(data, "benchmark")
 			}
 		})
+	}
+}
+
+func BenchmarkTransform_OpaqueImage1MiB(b *testing.B) {
+	d, err := detectors.NewRegexDetector([]string{"phone_intl"}, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	r := New(NewStore(), 0, RedactorOptions{}, d)
+	imageURL := "data:image/png;base64," + strings.Repeat("+1234567", 131072)
+	body, err := json.Marshal(map[string]any{
+		"input": []any{map[string]any{"type": "input_image", "image_url": imageURL}},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		result, err := r.Transform(body, "image", false, "allow")
+		if err != nil || result.Transformed != 0 {
+			b.Fatalf("opaque image transform: result=%+v err=%v", result, err)
+		}
 	}
 }
 

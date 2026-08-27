@@ -51,8 +51,9 @@ mappings:
   max_entries_per_session: 10000
   session_ttl_minutes: 60
 
-# Image pixels are not inspected for sensitive content. Choose block when
-# screenshots or other media must never leave the machine uninspected.
+# Image pixels are not inspected for sensitive content. Encoded image data,
+# image URLs, and image file IDs pass through unchanged under allow or warn.
+# Choose block when screenshots or other media must never leave the machine.
 media:
   images: allow # allow, warn, or block
 

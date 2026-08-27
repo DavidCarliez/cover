@@ -147,9 +147,15 @@ func (r *Redactor) transform(body []byte, session string, injectNote bool, media
 func collectStrings(v any, out map[string]struct{}) {
 	switch val := v.(type) {
 	case string:
+		if isImageDataURL(val) {
+			return
+		}
 		out[val] = struct{}{}
 	case map[string]any:
-		for _, vv := range val {
+		for key, vv := range val {
+			if opaqueImageProtocolField(val, key, vv) {
+				continue
+			}
 			collectStrings(vv, out)
 		}
 	case []any:
@@ -196,9 +202,15 @@ func immutableProtocolField(key string) bool {
 func (r *Redactor) walkPolicy(ctx context.Context, v any, session string, path []string, occupied map[string]struct{}, result *TransformResult, changed *bool, capture bool) (any, error) {
 	switch val := v.(type) {
 	case string:
+		if isImageDataURL(val) {
+			return val, nil
+		}
 		return r.transformString(ctx, val, session, occupied, result, changed, capture)
 	case map[string]any:
 		for k, vv := range val {
+			if opaqueImageProtocolField(val, k, vv) {
+				continue
+			}
 			if excludedProtocolField(val, path, k) {
 				continue
 			}
@@ -231,6 +243,33 @@ func (r *Redactor) walkPolicy(ctx context.Context, v any, session string, path [
 	default:
 		return v, nil
 	}
+}
+
+// Image payloads and references are opaque protocol values. Applying text
+// detectors to Base64 data can corrupt an otherwise valid image when random
+// encoded bytes happen to resemble a phone number, token, or custom pattern.
+// Media policy decides whether these values may pass; text policy must never
+// rewrite them.
+func opaqueImageProtocolField(object map[string]any, key string, value any) bool {
+	key = strings.ToLower(key)
+	typ, _ := object["type"].(string)
+	isImageObject := strings.Contains(strings.ToLower(typ), "image")
+	switch key {
+	case "image_url", "input_image", "b64_json":
+		return true
+	case "file_id":
+		return isImageObject
+	case "result", "data", "image", "url":
+		return isImageObject
+	}
+	text, ok := value.(string)
+	return ok && isImageDataURL(text)
+}
+
+func isImageDataURL(value string) bool {
+	value = strings.TrimLeft(value, " \t\r\n")
+	const prefix = "data:image/"
+	return len(value) >= len(prefix) && strings.EqualFold(value[:len(prefix)], prefix)
 }
 
 func (r *Redactor) fieldRule(key string) (FieldRule, bool) {
@@ -405,14 +444,14 @@ func (r *Redactor) transformMatches(text, session string, occupied map[string]st
 func detectImageMedia(v any) bool {
 	switch val := v.(type) {
 	case string:
-		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(val)), "data:image/")
+		return isImageDataURL(val)
 	case map[string]any:
 		if typ, _ := val["type"].(string); strings.Contains(strings.ToLower(typ), "image") {
 			return true
 		}
 		for k, vv := range val {
 			lk := strings.ToLower(k)
-			if lk == "image_url" || lk == "input_image" || lk == "image" {
+			if lk == "image_url" || lk == "input_image" || lk == "image" || lk == "b64_json" {
 				return true
 			}
 			if detectImageMedia(vv) {

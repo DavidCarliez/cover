@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -179,6 +180,59 @@ func TestProxyImageBlockPolicy(t *testing.T) {
 	p.ServeHTTP(rw, httptest.NewRequest(http.MethodPost, "/v1/responses", strings.NewReader(`{"input":[{"type":"input_image","image_url":"data:image/png;base64,AAAA"}]}`)))
 	if rw.Code != http.StatusForbidden || calls.Load() != 0 {
 		t.Fatalf("status=%d calls=%d", rw.Code, calls.Load())
+	}
+}
+
+func TestProxyPreservesBase64ImageWhileProtectingText(t *testing.T) {
+	encoded := strings.Repeat("+1234567", 32768)
+	imageURL := "data:image/png;base64," + encoded
+	var upstreamImage string
+	var upstreamText string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		input := body["input"].([]any)
+		upstreamImage = input[0].(map[string]any)["image_url"].(string)
+		upstreamText = input[1].(map[string]any)["text"].(string)
+		payload := strings.TrimPrefix(upstreamImage, "data:image/png;base64,")
+		if _, err := base64.StdEncoding.DecodeString(payload); err != nil {
+			http.Error(w, "invalid Base64", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer upstream.Close()
+
+	d, err := detectors.NewRegexDetector([]string{"phone_intl"}, []detectors.CustomPattern{{
+		Name: "private_ip", Pattern: `10\.20\.30\.40`, Action: "pseudonymize", Generator: "ipv4",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, err := New(upstream.URL, redact.New(redact.NewStore(), 0, redact.RedactorOptions{}, d), nil, Options{MediaImages: "allow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(map[string]any{
+		"input": []any{
+			map[string]any{"type": "input_image", "image_url": imageURL},
+			map[string]any{"type": "input_text", "text": "connect to 10.20.30.40"},
+		},
+	})
+	rw := httptest.NewRecorder()
+	p.ServeHTTP(rw, httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body)))
+	if rw.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rw.Code, rw.Body.String())
+	}
+	if upstreamImage != imageURL {
+		t.Fatal("upstream received modified image data")
+	}
+	if strings.Contains(upstreamText, "10.20.30.40") {
+		t.Fatal("upstream received unprotected private text")
 	}
 }
 
