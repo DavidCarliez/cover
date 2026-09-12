@@ -127,6 +127,8 @@ configuration is documented in [`configs/config.example.yaml`](configs/config.ex
 | `cover restart` | Restart it in the background |
 | `cover status [--json]` | Show process, listener, and redacted upstream status |
 | `cover version [--json]` | Show build version, commit, and date |
+| `cover update [--version vX.Y.Z]` | Install a verified GitHub release; restart and check health if running (Linux/macOS) |
+| `cover update --rollback` | Restore the previous binary, preserving configuration |
 | `cover env` | Print shell exports for configured clients |
 | `cover test` | Run a synthetic local redaction and restoration check |
 | `cover inspect request.json` | Preview exactly what Cover would forward |
@@ -140,6 +142,20 @@ configuration is documented in [`configs/config.example.yaml`](configs/config.ex
 Stopping Cover does not change client configuration. A client still pointed at
 Cover will fail to connect until Cover is restarted or the client is pointed
 back to its direct provider or router.
+
+Stops and restarts drain active requests for up to 30 seconds, configurable
+with `shutdown_timeout_ms`. After that deadline, remaining connections close.
+New connections can fail briefly during restart; this is not a zero-downtime
+handover. `cover status` and `cover doctor` report when the running daemon
+differs from the installed binary.
+
+On Linux/macOS, `cover update` downloads a published release over HTTPS,
+verifies its SHA-256 against the release checksums, validates the candidate,
+and saves the current binary for rollback. If the restarted daemon fails its
+health check, Cover restores the previous binary and attempts to restart it.
+Configuration is preserved. Windows users should stop Cover and rerun the
+release installer. Updates use published releases, not unreleased commits on
+`main`; checksums detect damaged downloads but are not independent signatures.
 
 ## Privacy policies
 
@@ -249,6 +265,9 @@ cover monitor --json
 
 The default monitor shows only allowlisted metadata: time, HTTP status,
 transformation count, byte counts, latency, categories, and generic errors.
+Known failures include a plain-language explanation and next step, such as
+which size limit to adjust or whether the provider timed out. JSON output
+includes `error`, `explanation`, and `next_step` for these failures.
 Audit logs never contain request or response bodies, matched values, mappings,
 paths, queries, or upstream credentials.
 

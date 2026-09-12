@@ -159,13 +159,17 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		// Transform errors are deliberately generic and never contain matched
 		// values, request bodies, or mapping contents.
-		p.logf("status=%d error=%v content_encoding=%s", http.StatusUnprocessableEntity, err, safeContentEncoding(r.Header.Get("Content-Encoding")))
+		code := "unsafe_request"
+		if encoding := r.Header.Get("Content-Encoding"); encoding != "" && encoding != "identity" {
+			code = "unsupported_compression"
+		}
+		p.logf("status=422 error=%s", code)
 		http.Error(w, "request rejected: body could not be safely inspected", http.StatusUnprocessableEntity)
 		return
 	}
 	if result.Blocked {
 		p.publishContent(captureContent, started, result, nil)
-		p.logRequest(http.StatusForbidden, result.Transformed, result.Categories, 0, 0, time.Since(started))
+		p.logf("status=403 error=policy_blocked")
 		http.Error(w, "request blocked by local privacy policy", http.StatusForbidden)
 		return
 	}
@@ -200,6 +204,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.client.Do(outReq)
 	if err != nil {
+		p.logf("status=502 error=%s", upstreamErrorCode(err))
 		http.Error(w, "upstream request failed", http.StatusBadGateway)
 		return
 	}
@@ -223,12 +228,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			rw = NewRestoringWriterForSession(counted, p.redactor, session)
 		}
 		if _, err := io.Copy(rw, &cappedReader{r: resp.Body, remaining: p.options.MaxResponseBytes}); err != nil {
-			p.logf("status=502 error=stream_interrupted")
+			p.logf("status=502 error=%s", streamErrorCode(err))
 			// Headers may already be sent. Abort the transport so the client
 			// cannot mistake a truncated stream for successful completion.
 			panic(http.ErrAbortHandler)
 		} else if err := rw.Close(); err != nil {
-			p.logf("status=502 error=stream_interrupted")
+			p.logf("status=502 error=%s", streamErrorCode(err))
 			panic(http.ErrAbortHandler)
 		}
 		responseBytes = counted.n
@@ -240,7 +245,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "upstream response rejected: body exceeds configured limit", http.StatusBadGateway)
 				return
 			}
-			p.logf("reading upstream response body: %v", err)
+			p.logf("status=502 error=%s", upstreamErrorCode(err))
 			http.Error(w, "failed to read upstream response", http.StatusBadGateway)
 			return
 		}

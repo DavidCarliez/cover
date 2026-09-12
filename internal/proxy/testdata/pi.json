@@ -1,0 +1,8 @@
+{
+  "model": "synthetic-model",
+  "messages": [
+    {"role": "user", "content": [{"type": "text", "text": "Find files for client-private@example.com"}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,YWJj"}}]},
+    {"role": "assistant", "tool_calls": [{"id": "call_1", "type": "function", "function": {"name": "list_files", "arguments": "{\"customer\":\"client-private@example.com\"}"}}]},
+    {"role": "tool", "tool_call_id": "call_1", "content": "Folder owned by client-private@example.com"}
+  ]
+}

@@ -76,39 +76,45 @@ func printStarted(w io.Writer, info startDisplay) {
 }
 
 type statusDisplay struct {
-	Running   bool
-	Listen    string
-	Upstream  string
-	LogFile   string
-	PID       int
-	DaemonLog string
+	BuildStatus string
+	Running     bool
+	Listen      string
+	Upstream    string
+	LogFile     string
+	PID         int
+	DaemonLog   string
 }
 
 type statusJSON struct {
-	Running   bool   `json:"running"`
-	PID       int    `json:"pid,omitempty"`
-	Listen    string `json:"listen"`
-	BaseURL   string `json:"base_url"`
-	Upstream  string `json:"upstream"`
-	LogFile   string `json:"log_file"`
-	DaemonLog string `json:"daemon_log,omitempty"`
+	BuildStatus string `json:"build_status,omitempty"`
+	Running     bool   `json:"running"`
+	PID         int    `json:"pid,omitempty"`
+	Listen      string `json:"listen"`
+	BaseURL     string `json:"base_url"`
+	Upstream    string `json:"upstream"`
+	LogFile     string `json:"log_file"`
+	DaemonLog   string `json:"daemon_log,omitempty"`
 }
 
 func printStatusJSON(w io.Writer, info statusDisplay) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(statusJSON{
-		Running:   info.Running,
-		PID:       info.PID,
-		Listen:    info.Listen,
-		BaseURL:   "http://" + info.Listen,
-		Upstream:  safeUpstreamDisplay(info.Upstream),
-		LogFile:   info.LogFile,
-		DaemonLog: info.DaemonLog,
+		BuildStatus: info.BuildStatus,
+		Running:     info.Running,
+		PID:         info.PID,
+		Listen:      info.Listen,
+		BaseURL:     "http://" + info.Listen,
+		Upstream:    safeUpstreamDisplay(info.Upstream),
+		LogFile:     info.LogFile,
+		DaemonLog:   info.DaemonLog,
 	})
 }
 
 func printStatus(w io.Writer, info statusDisplay) {
+	if info.BuildStatus != "" {
+		fmt.Fprintln(w, info.BuildStatus)
+	}
 	const (
 		reset  = "\033[0m"
 		bold   = "\033[1m"

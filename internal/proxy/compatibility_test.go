@@ -147,7 +147,11 @@ func TestStreamOverflowIsTransportFailure(t *testing.T) {
 				t.Fatal("truncated stream looked successful")
 			}
 			<-handlerDone
-			if !strings.Contains(logs.String(), "error=stream_interrupted") || strings.Contains(logs.String(), "status=200") {
+			wantCode := "response_too_large"
+			if eventLimit {
+				wantCode = "sse_event_too_large"
+			}
+			if !strings.Contains(logs.String(), "error="+wantCode) || strings.Contains(logs.String(), "status=200") {
 				t.Fatalf("logs: %s", logs.String())
 			}
 		})

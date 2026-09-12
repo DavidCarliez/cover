@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -57,7 +58,7 @@ func main() {
 	}
 	root.SetVersionTemplate("cover {{.Version}}\n")
 
-	root.AddCommand(versionCmd(), installCmd(), envCmd(), initCmd(), startCmd(), stopCmd(), restartCmd(), statusCmd(), doctorCmd(), monitorCmd(), testCmd(), inspectCmd(), modelsCmd())
+	root.AddCommand(versionCmd(), updateCmd(), installCmd(), envCmd(), initCmd(), startCmd(), stopCmd(), restartCmd(), statusCmd(), doctorCmd(), monitorCmd(), testCmd(), inspectCmd(), modelsCmd())
 
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
@@ -231,7 +232,7 @@ func stopCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := daemon.StopOrFind(pidPath, listenAddrFromConfig()); err != nil {
+			if err := daemon.StopOrFindAndWait(pidPath, listenAddrFromConfig(), shutdownWait()); err != nil {
 				return err
 			}
 			printStopped(os.Stdout)
@@ -250,7 +251,7 @@ func restartCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			if err := daemon.StopOrFindAndWait(pidPath, listenAddrFromConfig(), 5*time.Second); err != nil {
+			if err := daemon.StopOrFindAndWait(pidPath, listenAddrFromConfig(), shutdownWait()); err != nil {
 				return err
 			}
 			if detach {
@@ -288,6 +289,7 @@ func statusCmd() *cobra.Command {
 				PID:      pid,
 			}
 			if running {
+				info.BuildStatus = daemon.CompareBuild(pidPath, pid)
 				stateDir, err := config.StateDir()
 				if err == nil {
 					info.DaemonLog = filepath.Join(stateDir, "daemon.log")
@@ -605,17 +607,14 @@ func runForeground() error {
 		return err
 	}
 	defer daemon.Remove(pidPath)
+	if err := daemon.RecordBuild(pidPath, os.Getpid(), version, commit); err != nil {
+		_ = ln.Close()
+		return err
+	}
 
 	srv := &http.Server{Handler: p}
-
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	showStopBanner := false
-	go func() {
-		<-sigCh
-		showStopBanner = true
-		srv.Close()
-	}()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	if os.Getenv("COVER_NO_BANNER") == "" {
 		printStarted(os.Stdout, startDisplay{
@@ -626,10 +625,10 @@ func runForeground() error {
 		})
 	}
 
-	if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+	if err := serveGracefully(ctx, srv, ln, shutdownDuration(cfg)); err != nil {
 		return err
 	}
-	if showStopBanner {
+	if ctx.Err() != nil {
 		printStopped(os.Stdout)
 	}
 	return nil

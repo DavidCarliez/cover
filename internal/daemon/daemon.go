@@ -57,8 +57,7 @@ func IsRunning(pid int) bool {
 	return process.Signal(syscall.Signal(0)) == nil
 }
 
-// Stop sends SIGTERM to the process recorded in the pidfile at path and
-// removes the pidfile.
+// Stop sends SIGTERM. The daemon removes its pidfile after draining requests.
 func Stop(path string) error {
 	pid, err := Read(path)
 	if err != nil {
@@ -94,7 +93,8 @@ func stopPID(path string, pid int) error {
 	if err := process.Signal(syscall.SIGTERM); err != nil {
 		return fmt.Errorf("sending SIGTERM to pid %d: %w", pid, err)
 	}
-	return Remove(path)
+	// Keep the pidfile while the daemon drains active requests.
+	return nil
 }
 
 func stopPIDAndWait(path string, pid int, timeout time.Duration) error {

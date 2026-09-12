@@ -132,6 +132,13 @@ func runDoctor(ctx context.Context, timeout time.Duration) doctorReport {
 	}
 	if running {
 		report.add("proxy process", "pass", "Cover is running")
+		pid, _ := runningPID(pidPath, cfg.Listen)
+		buildStatus := daemon.CompareBuild(pidPath, pid)
+		if strings.Contains(buildStatus, "matches") {
+			report.add("running build", "pass", buildStatus)
+		} else {
+			report.add("running build", "warn", buildStatus)
+		}
 		checkLiveProxy(ctx, &report, cfg.Listen, timeout)
 	} else {
 		report.add("proxy process", "fail", "Cover is not running; run `cover start --detach`")

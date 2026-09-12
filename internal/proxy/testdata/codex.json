@@ -1,0 +1,10 @@
+{
+  "model": "synthetic-model",
+  "stream": false,
+  "input": [
+    {"role": "user", "content": [{"type": "input_text", "text": "Find files for client-private@example.com"}, {"type": "input_image", "image_url": "data:image/png;base64,YWJj"}]},
+    {"type": "function_call", "call_id": "call_1", "name": "list_files", "arguments": "{\"customer\":\"client-private@example.com\"}"},
+    {"type": "function_call_output", "call_id": "call_1", "output": "Folder owned by client-private@example.com"},
+    {"type": "reasoning", "encrypted_content": "opaque-test-bytes"}
+  ]
+}

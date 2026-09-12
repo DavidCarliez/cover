@@ -5,6 +5,21 @@ on:
   pull_request:
 
 jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        profile: [codex, pi, omp]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Synthetic conversation compatibility
+        run: go test -race -count=1 ./internal/proxy -run 'TestClientConversationFixtures/${{ matrix.profile }}'
+      - name: Cancellation, stalls, and interrupted streams
+        run: go test -race -count=1 ./internal/proxy -run 'TestResponseIdleTimeoutAndActiveStream|TestStreamOverflowIsTransportFailure|TestHeartbeatAndInterleavedChannelsRestore'
   test:
     runs-on: ubuntu-latest
     steps:
@@ -25,6 +40,11 @@ jobs:
 
       - name: Test release installer
         run: bash scripts/install_test.sh
+
+      - name: Test graceful daemon restart
+        run: |
+          go build -o "$RUNNER_TEMP/cover-lifecycle" ./cmd/cover
+          COVER_TEST_BINARY="$RUNNER_TEMP/cover-lifecycle" node scripts/lifecycle_test.mjs
 
       - name: Test Pi and OMP plugin
         run: |

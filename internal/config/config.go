@@ -19,18 +19,19 @@ import (
 
 // Config is the top-level configuration loaded from config.yaml.
 type Config struct {
-	Listen           string                             `yaml:"listen"`
-	Upstream         string                             `yaml:"upstream"`
-	LogFile          string                             `yaml:"log_file"`
-	Network          NetworkConfig                      `yaml:"network"`
-	Limits           LimitsConfig                       `yaml:"limits"`
-	Pseudonymization PseudonymizationConfig             `yaml:"pseudonymization"`
-	UpstreamTimeouts UpstreamTimeoutsConfig             `yaml:"upstream_timeouts"`
-	Cache            CacheConfig                        `yaml:"cache"`
-	Detectors        DetectorsConfig                    `yaml:"detectors"`
-	Rules            map[string]detectors.CustomPattern `yaml:"rules"`
-	Mappings         MappingsConfig                     `yaml:"mappings"`
-	Media            MediaConfig                        `yaml:"media"`
+	ShutdownTimeoutMS int                                `yaml:"shutdown_timeout_ms"`
+	Listen            string                             `yaml:"listen"`
+	Upstream          string                             `yaml:"upstream"`
+	LogFile           string                             `yaml:"log_file"`
+	Network           NetworkConfig                      `yaml:"network"`
+	Limits            LimitsConfig                       `yaml:"limits"`
+	Pseudonymization  PseudonymizationConfig             `yaml:"pseudonymization"`
+	UpstreamTimeouts  UpstreamTimeoutsConfig             `yaml:"upstream_timeouts"`
+	Cache             CacheConfig                        `yaml:"cache"`
+	Detectors         DetectorsConfig                    `yaml:"detectors"`
+	Rules             map[string]detectors.CustomPattern `yaml:"rules"`
+	Mappings          MappingsConfig                     `yaml:"mappings"`
+	Media             MediaConfig                        `yaml:"media"`
 }
 
 type NetworkConfig struct {
@@ -147,10 +148,11 @@ const (
 // the config file).
 func Default() *Config {
 	return &Config{
-		Listen:   defaultListen,
-		Upstream: "",
-		LogFile:  defaultLogPath(),
-		Network:  NetworkConfig{AllowRemote: false},
+		ShutdownTimeoutMS: 30000,
+		Listen:            defaultListen,
+		Upstream:          "",
+		LogFile:           defaultLogPath(),
+		Network:           NetworkConfig{AllowRemote: false},
 		Limits: LimitsConfig{
 			RequestBytes:  64 << 20,
 			ResponseBytes: 32 << 20,
@@ -252,6 +254,9 @@ func Load(path string) (*Config, error) {
 
 // Validate rejects an invalid security policy instead of silently weakening it.
 func (c *Config) Validate() error {
+	if c.ShutdownTimeoutMS < 0 {
+		return fmt.Errorf("shutdown_timeout_ms must not be negative")
+	}
 	if c.UpstreamTimeouts.ResponseIdleTimeoutMS < 0 {
 		return fmt.Errorf("response_idle_timeout_ms must not be negative")
 	}

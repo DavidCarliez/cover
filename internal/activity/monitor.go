@@ -16,6 +16,8 @@ import (
 const maxInitialTailBytes = int64(1 << 20)
 
 type Event struct {
+	Explanation   string    `json:"explanation,omitempty"`
+	NextStep      string    `json:"next_step,omitempty"`
 	Time          time.Time `json:"time"`
 	Status        int       `json:"status,omitempty"`
 	Transformed   int       `json:"transformed,omitempty"`
@@ -215,6 +217,7 @@ func readEvents(f *os.File, start, end int64, discardFirst bool) ([]Event, error
 }
 
 func writeEvent(w io.Writer, event Event, asJSON bool) error {
+	event.Explanation, event.NextStep = Explain(event.Error, event.Status)
 	if asJSON {
 		return json.NewEncoder(w).Encode(event)
 	}
@@ -225,6 +228,9 @@ func writeEvent(w io.Writer, event Event, asJSON bool) error {
 	errorText := "-"
 	if event.Error != "" {
 		errorText = event.Error
+	}
+	if event.Explanation != "" {
+		errorText = event.Explanation + " Next: " + event.NextStep
 	}
 	sent := "-"
 	if event.SentBytes != nil {

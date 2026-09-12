@@ -4,6 +4,10 @@
 # Address the local proxy listens on. Point your agent's API base URL here.
 listen: "127.0.0.1:8317"
 
+# Stop/restart waits for active requests before closing remaining connections.
+# Zero selects the 30-second default. New connections wait for the restart.
+shutdown_timeout_ms: 30000
+
 # The real LLM API to forward (redacted) requests to. Any base URL works —
 # Cover passes through method, path, query string, and headers.
 upstream: "https://api.anthropic.com"
