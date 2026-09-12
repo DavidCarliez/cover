@@ -3,6 +3,7 @@ package redact
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -38,9 +39,10 @@ type sessionMappings struct {
 // without holding Store.mu. A session invalidates its snapshot whenever a new
 // mapping is added.
 type restorationSnapshot struct {
-	replacer   *strings.Replacer
-	fakes      [][]byte
-	maxFakeLen int
+	replacer     *strings.Replacer
+	jsonReplacer *strings.Replacer
+	fakes        [][]byte
+	maxFakeLen   int
 }
 
 func (s *restorationSnapshot) restoreBytes(data []byte) ([]byte, bool) {
@@ -250,10 +252,13 @@ func (s *Store) restorationSnapshot(session string) *restorationSnapshot {
 
 	keys := sortedFakeKeys(m.reverse)
 	pairs := make([]string, 0, len(keys)*2)
+	jsonPairs := make([]string, 0, len(keys)*2)
 	fakes := make([][]byte, 0, len(keys))
 	maxFakeLen := 0
 	for _, fake := range keys {
 		pairs = append(pairs, fake, m.reverse[fake])
+		encoded, _ := json.Marshal(m.reverse[fake])
+		jsonPairs = append(jsonPairs, fake, string(encoded[1:len(encoded)-1]))
 		fakes = append(fakes, []byte(fake))
 		if len(fake) > maxFakeLen {
 			maxFakeLen = len(fake)
@@ -261,6 +266,7 @@ func (s *Store) restorationSnapshot(session string) *restorationSnapshot {
 	}
 	m.restore = &restorationSnapshot{
 		replacer: strings.NewReplacer(pairs...), fakes: fakes, maxFakeLen: maxFakeLen,
+		jsonReplacer: strings.NewReplacer(jsonPairs...),
 	}
 	return m.restore
 }

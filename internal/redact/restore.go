@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"strings"
 )
 
 // RestoreResponse replaces placeholder tokens in an upstream response body.
@@ -67,12 +68,21 @@ func (r *Redactor) restoreJSONOrRawWithSnapshot(body []byte, snapshot *restorati
 func (r *Redactor) walkRestoreStrings(v any, snapshot *restorationSnapshot) (any, bool) {
 	switch val := v.(type) {
 	case string:
+		if isImageDataURL(val) {
+			return val, false
+		}
 		restored, changed := snapshot.restoreString(val)
 		return restored, changed
 	case map[string]any:
 		changed := false
 		for k, vv := range val {
-			if immutableProtocolField(k) {
+			if immutableProtocolField(k) || opaqueImageProtocolField(val, k, vv) {
+				continue
+			}
+			if text, ok := vv.(string); ok && k == "arguments" && json.Valid([]byte(text)) {
+				restored := r.restoreJSONOrRawWithSnapshot([]byte(text), snapshot)
+				val[k] = string(restored)
+				changed = changed || string(restored) != text
 				continue
 			}
 			restored, fieldChanged := r.walkRestoreStrings(vv, snapshot)
@@ -91,6 +101,51 @@ func (r *Redactor) walkRestoreStrings(v any, snapshot *restorationSnapshot) (any
 	default:
 		return v, false
 	}
+}
+
+// JSONStreamState tracks the lexical context of streamed tool arguments.
+// Callers retain incomplete replacement tokens before passing fragments here.
+type JSONStreamState struct {
+	InString bool
+	Escaped  bool
+}
+
+func (r *Redactor) RestoreJSONFragment(data []byte, session string, state *JSONStreamState) []byte {
+	snapshot := r.store.restorationSnapshot(session)
+	if snapshot == nil {
+		return data
+	}
+	replacer := snapshot.jsonReplacer
+	var out strings.Builder
+	start := 0
+	for i, b := range data {
+		if state.InString {
+			if state.Escaped {
+				state.Escaped = false
+				continue
+			}
+			if b == '\\' {
+				state.Escaped = true
+				continue
+			}
+			if b == '"' {
+				out.WriteString(replacer.Replace(string(data[start:i])))
+				out.WriteByte(b)
+				start = i + 1
+				state.InString = false
+			}
+		} else if b == '"' {
+			out.Write(data[start : i+1])
+			start = i + 1
+			state.InString = true
+		}
+	}
+	if state.InString {
+		out.WriteString(replacer.Replace(string(data[start:])))
+	} else {
+		out.Write(data[start:])
+	}
+	return []byte(out.String())
 }
 
 // RestoreSSEEvent restores placeholders inside a single SSE event block.

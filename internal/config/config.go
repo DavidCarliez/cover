@@ -65,6 +65,7 @@ type MediaConfig struct {
 type UpstreamTimeoutsConfig struct {
 	ConnectTimeoutMS        int `yaml:"connect_timeout_ms"`
 	ResponseHeaderTimeoutMS int `yaml:"response_header_timeout_ms"`
+	ResponseIdleTimeoutMS   int `yaml:"response_idle_timeout_ms"`
 }
 
 // CacheConfig configures the in-memory redaction result cache.
@@ -151,7 +152,7 @@ func Default() *Config {
 		LogFile:  defaultLogPath(),
 		Network:  NetworkConfig{AllowRemote: false},
 		Limits: LimitsConfig{
-			RequestBytes:  16 << 20,
+			RequestBytes:  64 << 20,
 			ResponseBytes: 32 << 20,
 			SSEEventBytes: 4 << 20,
 		},
@@ -159,6 +160,7 @@ func Default() *Config {
 		UpstreamTimeouts: UpstreamTimeoutsConfig{
 			ConnectTimeoutMS:        10000,
 			ResponseHeaderTimeoutMS: 120000,
+			ResponseIdleTimeoutMS:   300000,
 		},
 		Cache: CacheConfig{
 			Enabled:    true,
@@ -250,6 +252,9 @@ func Load(path string) (*Config, error) {
 
 // Validate rejects an invalid security policy instead of silently weakening it.
 func (c *Config) Validate() error {
+	if c.UpstreamTimeouts.ResponseIdleTimeoutMS < 0 {
+		return fmt.Errorf("response_idle_timeout_ms must not be negative")
+	}
 	if err := validateListen(c.Listen, c.Network.AllowRemote); err != nil {
 		return err
 	}

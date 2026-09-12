@@ -255,6 +255,8 @@ func opaqueImageProtocolField(object map[string]any, key string, value any) bool
 	typ, _ := object["type"].(string)
 	isImageObject := strings.Contains(strings.ToLower(typ), "image")
 	switch key {
+	case "source":
+		return isImageObject
 	case "image_url", "input_image", "b64_json":
 		return true
 	case "file_id":

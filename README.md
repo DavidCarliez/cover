@@ -99,7 +99,7 @@ GOOS=windows GOARCH=amd64 go build -o cover.exe ./cmd/cover
 | Diagnostics | `cover doctor` verifies policy, daemon health, local fail-closed behavior, and Codex routing |
 | Monitoring | Metadata-only audit and monitor views, plus explicit live-only inspection of caught and forwarded content |
 | Proxy hardening | Loopback-by-default listeners, body and stream limits, generic safe errors, and fail-closed parsing |
-| Streaming compatibility | OpenAI Responses, Chat Completions, and Anthropic SSE restoration, including replacements split across consecutive delta events |
+| Streaming compatibility | OpenAI Responses, Chat Completions, and Anthropic SSE restoration across delta events, heartbeats, and interleaved channels; JSON-safe tool arguments |
 | Codex compatibility | Responses API and router configuration, compression checks, and immutable `encrypted_content` fields |
 | Optional semantic pass | A local llama.cpp detector can inspect free-form text that regular expressions miss |
 
@@ -420,7 +420,14 @@ controls. Cover itself does not authenticate ordinary proxy traffic.
 
 Request, buffered-response, total-stream, and per-SSE-event limits bound memory
 use. Oversized requests return HTTP 413, oversized buffered responses return
-HTTP 502, and oversized streams are terminated.
+HTTP 502, and oversized or interrupted streams fail at the transport level so
+clients can detect incomplete output. Defaults are 64 MiB per request, 32 MiB
+per response, and 4 MiB per SSE event or queued restoration data.
+
+`upstream_timeouts.response_idle_timeout_ms` limits how long Cover waits for
+the next response bytes (default: 300000, or five minutes). Active responses
+can continue longer. A stalled buffered response returns HTTP 502; a stalled
+stream is aborted. Client cancellation also cancels the upstream request.
 
 Read [`SECURITY.md`](SECURITY.md) before reporting a vulnerability. Please use
 the private reporting route described there rather than opening a public issue.

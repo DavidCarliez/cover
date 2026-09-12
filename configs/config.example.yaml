@@ -21,7 +21,7 @@ network:
 # 502. An in-progress stream is terminated when its response or SSE-event cap
 # is exceeded.
 limits:
-  request_bytes: 16777216  # 16 MiB
+  request_bytes: 67108864  # 64 MiB
   response_bytes: 33554432 # 32 MiB
   sse_event_bytes: 4194304 # 4 MiB
 
@@ -36,6 +36,9 @@ pseudonymization:
 upstream_timeouts:
   connect_timeout_ms: 10000
   response_header_timeout_ms: 120000
+  # Maximum wait for the next response bytes, not a total generation deadline.
+  # Zero selects the 5-minute default.
+  response_idle_timeout_ms: 300000
 
 # Cache redaction results for identical string fields across requests.
 cache:

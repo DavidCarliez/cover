@@ -577,6 +577,7 @@ func runForeground() error {
 	p, err := proxy.New(cfg.Upstream, redactor, logger, proxy.Options{
 		ConnectTimeout:        time.Duration(cfg.UpstreamTimeouts.ConnectTimeoutMS) * time.Millisecond,
 		ResponseHeaderTimeout: time.Duration(cfg.UpstreamTimeouts.ResponseHeaderTimeoutMS) * time.Millisecond,
+		ResponseIdleTimeout:   time.Duration(cfg.UpstreamTimeouts.ResponseIdleTimeoutMS) * time.Millisecond,
 		SessionHeader:         cfg.Mappings.SessionHeader,
 		MediaImages:           cfg.Media.Images,
 		MaxRequestBytes:       cfg.Limits.RequestBytes,

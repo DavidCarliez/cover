@@ -20,26 +20,31 @@ var ErrSSEEventTooLarge = errors.New("SSE event exceeds configured limit")
 // SSERestoringWriter buffers complete SSE events and restores placeholder
 // tokens inside JSON data lines with proper escaping.
 type SSERestoringWriter struct {
-	w        io.Writer
-	flusher  http.Flusher
-	redactor *redact.Redactor
-	session  string
-	buf      []byte
-	pending  *sseFragmentEvent
-	maxEvent int64
+	w           io.Writer
+	flusher     http.Flusher
+	redactor    *redact.Redactor
+	session     string
+	buf         []byte
+	pending     map[string]*sseFragmentEvent
+	queue       []*sseFragmentEvent
+	queuedBytes int64
+	jsonStates  map[string]*redact.JSONStreamState
+	maxEvent    int64
 }
 
-// sseFragmentEvent is one provider delta event held back by at most one
-// logical fragment. Keeping the event itself lets Close flush a final partial
-// value without inventing a duplicate SSE event or sequence number.
+// A channel retains its last delta until the next fragment or its end event.
+// The bounded queue preserves provider event order across interleaved channels.
 type sseFragmentEvent struct {
-	event        []byte
-	payloadStart int
-	payloadEnd   int
-	payload      any
-	channel      string
-	text         string
-	setText      func(string)
+	event         []byte
+	payloadStart  int
+	payloadEnd    int
+	payload       any
+	channel       string
+	text          string
+	setText       func(string)
+	ready         bool
+	output        []byte
+	jsonArguments bool
 }
 
 // NewSSERestoringWriter wraps w for text/event-stream responses.
@@ -56,7 +61,8 @@ func NewSSERestoringWriterForSessionWithLimit(w io.Writer, redactor *redact.Reda
 	if maxEvent <= 0 {
 		maxEvent = defaultSSEEventLimit
 	}
-	return &SSERestoringWriter{w: w, flusher: f, redactor: redactor, session: session, maxEvent: maxEvent}
+	return &SSERestoringWriter{w: w, flusher: f, redactor: redactor, session: session, maxEvent: maxEvent,
+		pending: make(map[string]*sseFragmentEvent), jsonStates: make(map[string]*redact.JSONStreamState)}
 }
 
 // Write implements io.Writer.
@@ -112,47 +118,156 @@ func (rw *SSERestoringWriter) writeEvent(event []byte) error {
 	}
 	fragment, ok := parseSSEFragmentEvent(event)
 	if !ok {
-		if err := rw.flushPending(); err != nil {
+		if heartbeatSSEEvent(event) {
+			return rw.emit(event)
+		}
+		if err := rw.finishChannels(event); err != nil {
 			return err
 		}
-		return rw.emit(rw.redactor.RestoreSSEEventForSession(event, rw.session))
-	}
-
-	if rw.pending == nil {
-		rw.pending = fragment
-		return nil
-	}
-	if rw.pending.channel != fragment.channel {
-		if err := rw.flushPending(); err != nil {
-			return err
+		if terminalSSEEvent(event) {
+			if err := rw.flushPending(); err != nil {
+				return err
+			}
 		}
-		rw.pending = fragment
-		return nil
+		rw.queue = append(rw.queue, &sseFragmentEvent{event: event, ready: true, output: rw.redactor.RestoreSSEEventForSession(event, rw.session)})
+		rw.queuedBytes += int64(len(event))
+		return rw.drain()
 	}
-
-	combined := rw.pending.text + fragment.text
-	cut := rw.redactor.SafeStreamCut([]byte(combined), rw.session)
-	if int64(len(combined)-cut) > rw.maxEvent {
-		rw.pending = nil
-		return ErrSSEEventTooLarge
+	if previous := rw.pending[fragment.channel]; previous != nil {
+		combined := previous.text + fragment.text
+		cut := rw.redactor.SafeStreamCut([]byte(combined), rw.session)
+		previous.output = previous.render(rw.restoreFragment(previous, []byte(combined[:cut])), rw.redactor, rw.session)
+		previous.ready = true
+		fragment.text = combined[cut:]
 	}
-	output := rw.redactor.RestoreForSession([]byte(combined[:cut]), rw.session)
-	if err := rw.emit(rw.pending.render(output, rw.redactor, rw.session)); err != nil {
-		return err
-	}
-	fragment.text = combined[cut:]
-	rw.pending = fragment
-	return nil
+	rw.pending[fragment.channel] = fragment
+	rw.queue = append(rw.queue, fragment)
+	rw.queuedBytes += int64(len(event))
+	return rw.drain()
 }
 
 func (rw *SSERestoringWriter) flushPending() error {
-	if rw.pending == nil {
-		return nil
+	for channel, pending := range rw.pending {
+		pending.output = pending.render(rw.restoreFragment(pending, []byte(pending.text)), rw.redactor, rw.session)
+		pending.ready = true
+		delete(rw.pending, channel)
 	}
-	pending := rw.pending
-	rw.pending = nil
-	text := rw.redactor.RestoreForSession([]byte(pending.text), rw.session)
-	return rw.emit(pending.render(text, rw.redactor, rw.session))
+	return rw.drain()
+}
+
+// Finish only the channel identified by an end event. Other channels may
+// still have incomplete replacement tokens waiting for their next delta.
+func (rw *SSERestoringWriter) finishChannels(event []byte) error {
+	for _, line := range strings.Split(strings.ReplaceAll(string(event), "\r", "\n"), "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var payload map[string]any
+		dec := json.NewDecoder(strings.NewReader(strings.TrimSpace(line[5:])))
+		dec.UseNumber()
+		if dec.Decode(&payload) != nil {
+			continue
+		}
+		typ, _ := payload["type"].(string)
+		channels := []string{}
+		if strings.HasSuffix(typ, ".done") {
+			channels = append(channels, responseDeltaChannel(strings.TrimSuffix(typ, ".done")+".delta", payload))
+		}
+		if typ == "content_block_stop" {
+			prefix := "anthropic:" + jsonIdentity(payload["index"]) + ":"
+			for channel := range rw.pending {
+				if strings.HasPrefix(channel, prefix) {
+					channels = append(channels, channel)
+				}
+			}
+		}
+		if choices, ok := payload["choices"].([]any); ok {
+			for position, raw := range choices {
+				choice, ok := raw.(map[string]any)
+				if !ok || choice["finish_reason"] == nil {
+					continue
+				}
+				id := jsonIdentity(choice["index"])
+				if id == "" {
+					id = strconv.Itoa(position)
+				}
+				for channel := range rw.pending {
+					if strings.HasPrefix(channel, "chat:"+id+":") {
+						channels = append(channels, channel)
+					}
+				}
+			}
+		}
+		for _, channel := range channels {
+			if pending := rw.pending[channel]; pending != nil {
+				pending.output = pending.render(rw.restoreFragment(pending, []byte(pending.text)), rw.redactor, rw.session)
+				pending.ready = true
+				delete(rw.pending, channel)
+				delete(rw.jsonStates, channel)
+			}
+		}
+	}
+	return rw.drain()
+}
+
+func heartbeatSSEEvent(event []byte) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(string(event), "\r", "\n"), "\n") {
+		if line != "" && !strings.HasPrefix(line, ":") {
+			return false
+		}
+	}
+	return true
+}
+
+func (rw *SSERestoringWriter) restoreFragment(event *sseFragmentEvent, text []byte) []byte {
+	if !event.jsonArguments {
+		return rw.redactor.RestoreForSession(text, rw.session)
+	}
+	state := rw.jsonStates[event.channel]
+	if state == nil {
+		state = &redact.JSONStreamState{}
+		rw.jsonStates[event.channel] = state
+	}
+	return rw.redactor.RestoreJSONFragment(text, rw.session, state)
+}
+
+func (rw *SSERestoringWriter) drain() error {
+	for len(rw.queue) > 0 && rw.queue[0].ready {
+		event := rw.queue[0]
+		if err := rw.emit(event.output); err != nil {
+			return err
+		}
+		rw.queuedBytes -= int64(len(event.event))
+		rw.queue[0] = nil
+		rw.queue = rw.queue[1:]
+	}
+	if rw.queuedBytes > rw.maxEvent || len(rw.pending) > 128 {
+		return ErrSSEEventTooLarge
+	}
+	return nil
+}
+
+func terminalSSEEvent(event []byte) bool {
+	for _, line := range strings.Split(strings.ReplaceAll(string(event), "\r", "\n"), "\n") {
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "[DONE]" {
+			return true
+		}
+		var payload struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal([]byte(data), &payload) != nil {
+			continue
+		}
+		switch payload.Type {
+		case "response.completed", "response.failed", "response.incomplete", "message_stop", "error":
+			return true
+		}
+	}
+	return false
 }
 
 func (rw *SSERestoringWriter) emit(data []byte) error {
@@ -166,12 +281,25 @@ func (rw *SSERestoringWriter) emit(data []byte) error {
 }
 
 func (event *sseFragmentEvent) render(text []byte, redactor *redact.Redactor, session string) []byte {
-	event.setText(string(text))
+	// Restore metadata separately; the fragment already has its inner escaping.
+	event.setText("")
+	if snapshotPayload, err := json.Marshal(event.payload); err == nil {
+		restored := redactor.RestoreResponseForSession(snapshotPayload, "application/json", session)
+		var payload any
+		dec := json.NewDecoder(bytes.NewReader(restored))
+		dec.UseNumber()
+		if dec.Decode(&payload) == nil {
+			fragments := findSSEFragments(payload)
+			if len(fragments) == 1 {
+				fragments[0].setText(string(text))
+				event.payload = payload
+			}
+		}
+	}
 	payload, err := json.Marshal(event.payload)
 	if err != nil {
 		return redactor.RestoreSSEEventForSession(event.event, session)
 	}
-	payload = redactor.RestoreResponseForSession(payload, "application/json", session)
 	rendered := make([]byte, 0, len(event.event)-event.payloadEnd+event.payloadStart+len(payload))
 	rendered = append(rendered, event.event[:event.payloadStart]...)
 	rendered = append(rendered, payload...)
@@ -240,6 +368,7 @@ func parseSSEFragmentEvent(event []byte) (*sseFragmentEvent, bool) {
 	return &sseFragmentEvent{
 		event: event, payloadStart: payloadStart, payloadEnd: payloadEnd, payload: payload,
 		channel: candidate.channel, text: candidate.text, setText: candidate.setText,
+		jsonArguments: strings.Contains(candidate.channel, "function_call_arguments") || strings.HasSuffix(candidate.channel, ":partial_json") || strings.Contains(candidate.channel, ":tool:"),
 	}, true
 }
 

@@ -27,7 +27,7 @@ import (
 const (
 	defaultConnectTimeout        = 10 * time.Second
 	defaultResponseHeaderTimeout = 120 * time.Second
-	defaultMaxRequestBytes       = int64(16 << 20)
+	defaultMaxRequestBytes       = int64(64 << 20)
 	defaultMaxResponseBytes      = int64(32 << 20)
 	defaultMaxSSEEventBytes      = int64(4 << 20)
 )
@@ -38,6 +38,7 @@ var errBodyTooLarge = errors.New("body exceeds configured limit")
 type Options struct {
 	ConnectTimeout        time.Duration
 	ResponseHeaderTimeout time.Duration
+	ResponseIdleTimeout   time.Duration
 	SessionHeader         string
 	MediaImages           string
 	MaxRequestBytes       int64
@@ -48,6 +49,9 @@ type Options struct {
 }
 
 func (o Options) withDefaults() Options {
+	if o.ResponseIdleTimeout <= 0 {
+		o.ResponseIdleTimeout = 5 * time.Minute
+	}
 	if o.ConnectTimeout <= 0 {
 		o.ConnectTimeout = defaultConnectTimeout
 	}
@@ -200,6 +204,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer resp.Body.Close()
+	resp.Body = &idleReadCloser{ReadCloser: resp.Body, timeout: p.options.ResponseIdleTimeout}
 
 	ct := resp.Header.Get("Content-Type")
 	streaming := strings.Contains(ct, "text/event-stream") || resp.Header.Get("Transfer-Encoding") == "chunked"
@@ -218,9 +223,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			rw = NewRestoringWriterForSession(counted, p.redactor, session)
 		}
 		if _, err := io.Copy(rw, &cappedReader{r: resp.Body, remaining: p.options.MaxResponseBytes}); err != nil {
-			p.logf("streaming upstream response: %v", err)
+			p.logf("status=502 error=stream_interrupted")
+			// Headers may already be sent. Abort the transport so the client
+			// cannot mistake a truncated stream for successful completion.
+			panic(http.ErrAbortHandler)
 		} else if err := rw.Close(); err != nil {
-			p.logf("closing streaming response: %v", err)
+			p.logf("status=502 error=stream_interrupted")
+			panic(http.ErrAbortHandler)
 		}
 		responseBytes = counted.n
 	} else {

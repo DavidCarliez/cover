@@ -50,7 +50,10 @@ func TestDefault(t *testing.T) {
 	if cfg.Network.AllowRemote {
 		t.Error("Network.AllowRemote = true, want false")
 	}
-	if cfg.Limits.RequestBytes != 16<<20 || cfg.Limits.ResponseBytes != 32<<20 || cfg.Limits.SSEEventBytes != 4<<20 {
+	if cfg.UpstreamTimeouts.ResponseIdleTimeoutMS != 300000 {
+		t.Fatal("unexpected response inactivity default")
+	}
+	if cfg.Limits.RequestBytes != 64<<20 || cfg.Limits.ResponseBytes != 32<<20 || cfg.Limits.SSEEventBytes != 4<<20 {
 		t.Fatalf("unexpected default limits: %+v", cfg.Limits)
 	}
 	wantKey := filepath.Join(home, ".config", dirName, "pseudonym.key")
