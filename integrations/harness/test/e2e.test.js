@@ -103,7 +103,7 @@ test("Pi and OMP send protected values through Cover and receive restored output
     DEEPSEEK_API_KEY: "test",
     NO_COLOR: "1",
   };
-  const cover = spawn(coverBinary, ["start"], { env: commonEnv, stdio: ["ignore", "pipe", "pipe"] });
+  let cover = spawn(coverBinary, ["start"], { env: commonEnv, stdio: ["ignore", "pipe", "pipe"] });
   let coverError = "";
   cover.stderr.on("data", (chunk) => { coverError += chunk; });
   t.after(() => cover.kill("SIGTERM"));
@@ -126,4 +126,28 @@ test("Pi and OMP send protected values through Cover and receive restored output
   assert.match(ompOutput, new RegExp(secret.replace(".", "\\.")), `OMP did not receive the restored value: ${ompOutput}`);
   assert.ok(received.length >= 2, `expected requests from both harnesses, received ${received.length}`);
   assert.ok(received.every((body) => !body.includes(secret)), "an upstream request contained the original secret");
+
+  // The original provider points to the mock directly. With opt-in fallback,
+  // stopping Cover must restore that original route in the actual harness.
+  writeFileSync(join(ompAgent, "models.yml"), `providers:\n  deepseek:\n    baseUrl: "http://127.0.0.1:${upstreamPort}/v1"\n`);
+  writeFileSync(join(coverDir, "harness.json"), JSON.stringify({ enabled: true, autoFallback: true, routes: { deepseek: "" } }), { mode: 0o600 });
+  const stopped = new Promise(resolve => cover.once("exit", resolve));
+  const stopDriver = join(root, "stop-cover.js");
+  writeFileSync(stopDriver, `import { execFileSync } from "node:child_process";\nexport default function(pi) { pi.on("session_start", async () => { execFileSync(${JSON.stringify(coverBinary)}, ["stop"], { env: process.env, timeout: 10000 }); }); }\n`);
+  const directStart = received.length;
+  const direct = await run("omp", ["-e", extension, "-e", stopDriver, "--no-session", "--no-tools", "--no-title", "-p", "--model", "deepseek/deepseek-v4-flash", `Repeat this exact value: ${secret}`], {
+    ...commonEnv, PI_CODING_AGENT_DIR: ompAgent,
+  }, root);
+  await stopped;
+  assert.ok(direct.includes(secret), "direct fallback did not return the reply");
+  assert.ok(received.slice(directStart).some(body => body.includes(secret)), "opted-in direct route was not used");
+
+  cover = spawn(coverBinary, ["start"], { env: commonEnv, stdio: ["ignore", "ignore", "pipe"] });
+  await waitForPort(coverPort);
+  const recoveredStart = received.length;
+  const recovered = await run("omp", ["-e", extension, "--no-session", "--no-tools", "--no-title", "-p", "--model", "deepseek/deepseek-v4-flash", `Repeat this exact value: ${secret}`], {
+    ...commonEnv, PI_CODING_AGENT_DIR: ompAgent,
+  }, root);
+  assert.ok(recovered.includes(secret), "restored protection did not return the reply");
+  assert.ok(received.length > recoveredStart && received.slice(recoveredStart).every(body => !body.includes(secret)), "recovery did not restore protection");
 });

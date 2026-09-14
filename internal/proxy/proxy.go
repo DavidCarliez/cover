@@ -36,6 +36,7 @@ var errBodyTooLarge = errors.New("body exceeds configured limit")
 
 // Options configures upstream HTTP client timeouts. Zero values use defaults.
 type Options struct {
+	UpstreamPaths         map[string]string
 	ConnectTimeout        time.Duration
 	ResponseHeaderTimeout time.Duration
 	ResponseIdleTimeout   time.Duration
@@ -176,7 +177,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	redactedBody, categories := result.Body, result.Categories
 
 	target := *p.upstream
-	target.Path = singleJoiningSlash(p.upstream.Path, r.URL.Path)
+	path := r.URL.Path
+	if mapped, ok := p.options.UpstreamPaths[path]; ok {
+		path = mapped
+	}
+	target.Path = singleJoiningSlash(p.upstream.Path, path)
 	target.RawQuery = r.URL.RawQuery
 
 	outReq, err := http.NewRequestWithContext(r.Context(), r.Method, target.String(), bytes.NewReader(redactedBody))

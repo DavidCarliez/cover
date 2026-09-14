@@ -69,6 +69,7 @@ export function readState(path, env = process.env) {
 
   return {
     enabled: env.COVER_HARNESS_DISABLED ? false : stored.enabled !== false,
+    autoFallback: stored.autoFallback === true,
     routes,
   };
 }
@@ -129,7 +130,7 @@ function notify(ctx, message, level = "info") {
 
 function setIndicator(ctx, state, detail = "") {
   if (!ctx?.ui?.setStatus) return;
-  const label = state === "protected" ? "cover: protected" : state === "off" ? "cover: off" : "cover: blocked";
+  const label = state === "direct" ? "cover: DIRECT — unprotected" : state === "protected" ? "cover: protected" : state === "off" ? "cover: off" : "cover: blocked";
   ctx.ui.setStatus(STATUS_KEY, detail ? `${label} (${detail})` : label);
 }
 
@@ -137,7 +138,9 @@ export function createCoverExtension(pi, options = {}) {
   const env = options.env || process.env;
   const savedStatePath = options.statePath || statePath(env);
   let state = readState(savedStatePath, env);
-  let status = readCoverStatusSync(env);
+  const readStatus = options.readStatus || (() => readCoverStatusSync(env));
+  let status = readStatus();
+  let bypassed = state.enabled && state.autoFallback && !status.running;
   const explicitBaseURL = env.COVER_BASE_URL;
   const baseURL = explicitBaseURL || status.base_url || "http://127.0.0.1:8317";
   const registered = new Set();
@@ -148,12 +151,12 @@ export function createCoverExtension(pi, options = {}) {
 
   const applyRoutes = () => {
     for (const provider of [...registered]) {
-      if (!state.enabled || !(provider in state.routes)) {
+      if (!state.enabled || bypassed || !(provider in state.routes)) {
         pi.unregisterProvider(provider);
         registered.delete(provider);
       }
     }
-    if (!state.enabled) return;
+    if (!state.enabled || bypassed) return;
     for (const [provider, path] of Object.entries(state.routes)) {
       pi.registerProvider(provider, { baseUrl: proxyEndpoint(baseURL, path) });
       registered.add(provider);
@@ -170,12 +173,38 @@ export function createCoverExtension(pi, options = {}) {
   };
   applyRoutes();
 
+  const reconcile = async (ctx) => {
+    status = readStatus();
+    let available = status.running;
+    if (state.enabled && state.autoFallback && available) {
+      try {
+        // Local-only malformed input checks the proxy without forwarding data.
+        available = options.probe ? await options.probe() : (await fetch(`${baseURL.replace(/\/$/, "")}/__cover_doctor__`, {
+          method: "POST", body: '{"input":', signal: AbortSignal.timeout(1500), redirect: "error",
+        })).status === 422;
+      } catch { available = false; }
+    }
+    const next = state.enabled && state.autoFallback && !available;
+    const changed = next !== bypassed;
+    bypassed = next;
+    applyRoutes();
+    await refreshActiveModel(ctx);
+    setIndicator(ctx, !state.enabled ? "off" : bypassed ? "direct" : available ? "protected" : "blocked");
+    if (changed && bypassed) notify(ctx, "Cover is unavailable. Automatic fallback is enabled: new turns send directly, without privacy protection.", "warning");
+    if (changed && !bypassed && state.enabled) notify(ctx, "Cover is available again. New turns use privacy protection.");
+  };
+
+  // Reconcile before a new user turn, never retry a failed request directly.
+  pi.on("before_agent_start", async (_event, ctx) => { await reconcile(ctx); });
+
   pi.on("session_start", async (_event, ctx) => {
     // OMP resolves the initial model before it drains queued extension provider
     // overrides. Reapply and reselect here so the first request uses Cover too.
-    applyRoutes();
-    await refreshActiveModel(ctx);
-    status = readCoverStatusSync(env);
+    await reconcile(ctx);
+    if (bypassed) {
+      notify(ctx, "Cover is unavailable. Automatic fallback is enabled: sending directly without privacy protection.", "warning");
+      return;
+    }
     if (!state.enabled) {
       setIndicator(ctx, "off");
       return;
@@ -205,11 +234,10 @@ export function createCoverExtension(pi, options = {}) {
       try {
         switch (action.toLowerCase()) {
           case "status": {
-            status = readCoverStatusSync(env);
+            await reconcile(ctx);
             const providers = Object.keys(state.routes).join(", ") || "none";
-            const mode = state.enabled ? (status.running ? "protected" : "fail-closed") : "off";
-            setIndicator(ctx, state.enabled && status.running ? "protected" : state.enabled ? "blocked" : "off");
-            notify(ctx, `Cover: ${mode}\nProviders: ${providers}\nProxy: ${baseURL}\nDaemon: ${status.running ? "running" : "stopped"}`,
+            const mode = state.enabled ? (bypassed ? "DIRECT — unprotected" : status.running ? "protected" : "fail-closed") : "off";
+            notify(ctx, `Cover: ${mode}\nAutomatic fallback: ${state.autoFallback ? "on" : "off"}\nProviders: ${providers}\nProxy: ${baseURL}\nDaemon: ${status.running ? "running" : "stopped"}`,
               state.enabled && !status.running ? "warning" : "info");
             break;
           }
@@ -217,20 +245,26 @@ export function createCoverExtension(pi, options = {}) {
             if (Object.keys(state.routes).length === 0) throw new Error("configure providers first: /cover providers <provider>");
             state.enabled = true;
             save();
-            applyRoutes();
-            await refreshActiveModel(ctx);
-            status = readCoverStatusSync(env);
-            setIndicator(ctx, status.running ? "protected" : "blocked");
-            notify(ctx, status.running ? "Cover protection enabled." : "Cover protection enabled fail-closed; start the daemon with /cover start.", status.running ? "info" : "warning");
+            await reconcile(ctx);
+            notify(ctx, bypassed ? "Cover unavailable: direct fallback active." : status.running ? "Cover protection enabled." : "Cover protection enabled fail-closed; start the daemon with /cover start.", status.running ? "info" : "warning");
             break;
           case "off":
             state.enabled = false;
+            bypassed = false;
             save();
             applyRoutes();
             await refreshActiveModel(ctx);
             setIndicator(ctx, "off");
             notify(ctx, "Cover protection disabled. Configured providers now connect directly.", "warning");
             break;
+          case "fallback": {
+            if (!["on", "off"].includes(rest[0]) || rest.length !== 1) throw new Error("Usage: /cover fallback on|off");
+            state.autoFallback = rest[0] === "on";
+            save();
+            await reconcile(ctx);
+            notify(ctx, state.autoFallback ? "Automatic fallback enabled. If Cover is unavailable, new turns send directly without privacy protection." : "Automatic fallback disabled. Cover remains fail-closed when enabled.", state.autoFallback ? "warning" : "info");
+            break;
+          }
           case "providers": {
             const spec = rest.join(" ");
             if (!spec) {
@@ -246,15 +280,13 @@ export function createCoverExtension(pi, options = {}) {
           }
           case "start":
             await runCover(["start", "--detach"], env, 30000);
-            status = readCoverStatusSync(env);
-            setIndicator(ctx, state.enabled && status.running ? "protected" : state.enabled ? "blocked" : "off");
+            await reconcile(ctx);
             notify(ctx, status.running ? "Cover daemon started." : "Cover did not report a running daemon.", status.running ? "info" : "error");
             break;
           case "stop":
-            await runCover(["stop"], env);
-            status = readCoverStatusSync(env);
-            setIndicator(ctx, state.enabled ? "blocked" : "off", state.enabled ? "daemon stopped" : "");
-            notify(ctx, state.enabled ? "Cover daemon stopped; configured providers remain fail-closed." : "Cover daemon stopped.", "warning");
+            await runCover(["stop"], env, 120000);
+            await reconcile(ctx);
+            notify(ctx, bypassed ? "Cover daemon stopped; new turns connect directly without protection." : state.enabled ? "Cover daemon stopped; configured providers remain fail-closed." : "Cover daemon stopped.", "warning");
             break;
           case "doctor":
             notify(ctx, (await runCover(["doctor"], env, 30000)) || "Cover doctor completed.");
@@ -263,7 +295,7 @@ export function createCoverExtension(pi, options = {}) {
             notify(ctx, (await runCover(["monitor", "--follow=false", "-n", "10"], env)) || "No recent Cover activity.");
             break;
           case "help":
-            notify(ctx, "Usage: /cover [status|on|off|providers <id[=/path],…>|start|stop|doctor|monitor]");
+            notify(ctx, "Usage: /cover [status|on|off|fallback on|fallback off|providers <id[=/path],…>|start|stop|doctor|monitor]");
             break;
           default:
             throw new Error(`unknown Cover action: ${action}. Run /cover help.`);

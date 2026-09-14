@@ -8,6 +8,11 @@ listen: "127.0.0.1:8317"
 # Zero selects the 30-second default. New connections wait for the restart.
 shutdown_timeout_ms: 30000
 
+# Optional exact request-path aliases for an upstream router. No rewriting
+# occurs unless configured. For example, a Codex transport may need:
+# upstream_paths:
+#   /codex/responses: /responses
+
 # The real LLM API to forward (redacted) requests to. Any base URL works —
 # Cover passes through method, path, query string, and headers.
 upstream: "https://api.anthropic.com"

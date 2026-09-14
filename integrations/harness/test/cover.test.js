@@ -36,6 +36,48 @@ test("environment routes override persisted routes", () => {
   const path = join(dir, "harness.json");
   const state = readState(path, { HOME: dir, COVER_PROVIDERS: "openai-codex,deepseek=/" });
   assert.deepEqual(state.routes, { "openai-codex": "/v1", deepseek: "" });
+  assert.equal(state.autoFallback, false);
+});
+
+test("opt-in fallback switches new turns directly and restores protection on recovery", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cover-fallback-"));
+  const path = join(dir, "harness.json");
+  const registered = new Map(), commands = new Map(), events = new Map();
+  let running = true, reachable = true, activeURL;
+  const indicators = [];
+  const pi = {
+    registerProvider(name, config) { registered.set(name, config); },
+    unregisterProvider(name) { registered.delete(name); },
+    registerCommand(name, command) { commands.set(name, command); },
+    on(name, handler) { events.set(name, handler); },
+    async setModel(model) { activeURL = model.baseUrl; return true; },
+  };
+  const ctx = {
+    model: { provider: "example", id: "test" },
+    modelRegistry: { find() { return { provider: "example", id: "test", baseUrl: registered.get("example")?.baseUrl || "https://direct.example" }; } },
+    ui: { notify() {}, setStatus(_name, value) { indicators.push(value); } },
+  };
+  createCoverExtension(pi, { env: { HOME: dir, COVER_PROVIDERS: "example=/", COVER_BASE_URL: "http://127.0.0.1:9999" }, statePath: path,
+    readStatus: () => ({ running, installed: true }), probe: async () => reachable });
+  running = false;
+  await events.get("before_agent_start")({}, ctx);
+  assert.equal(activeURL, "http://127.0.0.1:9999", "default must remain fail-closed");
+  await commands.get("cover").handler("fallback on", ctx);
+  assert.equal(activeURL, "https://direct.example");
+  assert.match(indicators.at(-1), /DIRECT/);
+  assert.equal(JSON.parse(readFileSync(path, "utf8")).autoFallback, true);
+  running = true;
+  await events.get("before_agent_start")({}, ctx);
+  assert.equal(activeURL, "http://127.0.0.1:9999");
+  reachable = false;
+  await events.get("before_agent_start")({}, ctx);
+  assert.equal(activeURL, "https://direct.example", "hung daemon should permit opted-in fallback");
+  await commands.get("cover").handler("fallback off", ctx);
+  assert.equal(activeURL, "http://127.0.0.1:9999");
+  await commands.get("cover").handler("off", ctx);
+  reachable = true;
+  await events.get("before_agent_start")({}, ctx);
+  assert.equal(activeURL, "https://direct.example", "manual off must stay off");
 });
 
 test("extension registers routes and persists on/off without touching other providers", async () => {

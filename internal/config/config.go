@@ -19,6 +19,7 @@ import (
 
 // Config is the top-level configuration loaded from config.yaml.
 type Config struct {
+	UpstreamPaths     map[string]string                  `yaml:"upstream_paths,omitempty"`
 	ShutdownTimeoutMS int                                `yaml:"shutdown_timeout_ms"`
 	Listen            string                             `yaml:"listen"`
 	Upstream          string                             `yaml:"upstream"`
@@ -254,6 +255,11 @@ func Load(path string) (*Config, error) {
 
 // Validate rejects an invalid security policy instead of silently weakening it.
 func (c *Config) Validate() error {
+	for from, to := range c.UpstreamPaths {
+		if !strings.HasPrefix(from, "/") || !strings.HasPrefix(to, "/") || strings.ContainsAny(from+to, "?#") {
+			return fmt.Errorf("upstream_paths must map absolute URL paths without queries or fragments")
+		}
+	}
 	if c.ShutdownTimeoutMS < 0 {
 		return fmt.Errorf("shutdown_timeout_ms must not be negative")
 	}

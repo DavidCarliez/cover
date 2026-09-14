@@ -577,6 +577,7 @@ func runForeground() error {
 	contentHub := activity.NewHub(4)
 
 	p, err := proxy.New(cfg.Upstream, redactor, logger, proxy.Options{
+		UpstreamPaths:         cfg.UpstreamPaths,
 		ConnectTimeout:        time.Duration(cfg.UpstreamTimeouts.ConnectTimeoutMS) * time.Millisecond,
 		ResponseHeaderTimeout: time.Duration(cfg.UpstreamTimeouts.ResponseHeaderTimeoutMS) * time.Millisecond,
 		ResponseIdleTimeout:   time.Duration(cfg.UpstreamTimeouts.ResponseIdleTimeoutMS) * time.Millisecond,

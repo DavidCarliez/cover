@@ -29,12 +29,23 @@ OpenAI-family providers default to the `/v1` proxy path. Use `=/` for providers
 whose transport supplies its own API path. Custom paths are also supported, for
 example `router=/api/v1`.
 
-Commands: `/cover status`, `/cover on`, `/cover off`, `/cover providers`,
+Commands: `/cover status`, `/cover on`, `/cover off`, `/cover fallback on|off`, `/cover providers`,
 `/cover start`, `/cover stop`, `/cover doctor`, and `/cover monitor`.
 
 When protection is enabled, configured providers remain pointed at the local
 proxy if Cover stops. Their requests fail locally instead of bypassing Cover.
 State is stored in `~/.config/cover/harness.json` with private permissions.
+
+For automatic direct routing when Cover is unavailable, opt in with
+`/cover fallback on`. Before each new user turn, the plugin checks Cover. It
+restores the provider's original connection settings if Cover is unavailable,
+and shows **DIRECT — unprotected**. When Cover returns, protection resumes on
+the next user turn. `/cover fallback off` restores the default fail-closed mode.
+Existing requests and tool continuations are not replayed directly on failure.
+The provider's original connection settings must work independently of Cover.
+
+OMP's plugin enable/disable controls manage plugin loading. They are separate
+from starting/stopping the Cover daemon or its automatic fallback policy.
 
 Environment overrides:
 

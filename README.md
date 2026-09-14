@@ -373,10 +373,16 @@ root for transports such as DeepSeek that add their own request path. Use
 `/cover status`, `/cover start`, `/cover stop`, and `/cover monitor` for normal
 operation. `/cover off` restores direct provider routing.
 
-Protection is fail-closed: while enabled, configured providers remain pointed
+Protection is fail-closed by default: while enabled, configured providers remain pointed
 at Cover when its daemon is unavailable, so requests fail locally rather than
 bypassing the proxy. Extension state is private and local at
 `~/.config/cover/harness.json`.
+
+Opt in with `/cover fallback on` to send new user turns directly if Cover is
+unavailable. The plugin shows **DIRECT — unprotected** and resumes protection
+when Cover is available at the next user turn. `/cover fallback off` restores
+fail-closed behavior. Failed requests and tool continuations are not replayed
+directly. The original provider configuration must support direct connections.
 
 OMP users can add this repository as a marketplace:
 
