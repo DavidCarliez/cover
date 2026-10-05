@@ -3,41 +3,45 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"strings"
 	"testing"
-	"time"
 
 	"github.com/DavidCarliez/cover/internal/activity"
 )
 
-func TestWriteContentEventShowsCaughtAndOutboundBody(t *testing.T) {
+func TestContentPairsKeepControlCharactersOnOneLine(t *testing.T) {
 	event := activity.ContentEvent{
-		Time: time.Date(2026, 8, 22, 12, 0, 0, 0, time.UTC), Transformed: 1,
-		Caught: []activity.ContentCapture{{
-			Rule: "customer", Category: "customer", Action: "pseudonymize",
-			Original: "nike", Replacement: "alias-123",
-		}},
-		Sent: json.RawMessage(`{"input":"alias-123"}`),
+		Caught: []activity.ContentCapture{
+			{Original: "line\nbreak", Replacement: "alias-123"},
+			{Original: "tab\tand\rreturn", Replacement: "quoted\"value"},
+		},
+		Sent: json.RawMessage(`{"input":"must not appear in the text view"}`),
 	}
 	var out bytes.Buffer
 	if err := writeContentEvent(&out, event, false); err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"nike"`, `"alias-123"`, "Sent to LLM", `"input": "alias-123"`} {
-		if !strings.Contains(out.String(), want) {
-			t.Fatalf("output omitted %q:\n%s", want, out.String())
-		}
+	want := "\"line\\nbreak\" -> \"alias-123\"\n\"tab\\tand\\rreturn\" -> \"quoted\\\"value\"\n"
+	if out.String() != want {
+		t.Fatalf("pair output = %q, want %q", out.String(), want)
 	}
 }
 
-func TestWriteContentEventExplainsLocalBlock(t *testing.T) {
-	event := activity.ContentEvent{Blocked: true, Transformed: 1}
+func TestContentJSONRetainsBlockedStateAndOutboundBody(t *testing.T) {
+	event := activity.ContentEvent{
+		Blocked: true,
+		Caught: []activity.ContentCapture{{Original: "original", Replacement: "replacement"}},
+		Sent: json.RawMessage(`{"input":"replacement"}`),
+	}
 	var out bytes.Buffer
-	if err := writeContentEvent(&out, event, false); err != nil {
+	if err := writeContentEvent(&out, event, true); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "nothing (blocked locally)") {
-		t.Fatalf("blocked output was ambiguous:\n%s", out.String())
+	var got activity.ContentEvent
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatal(err)
+	}
+	if !got.Blocked || len(got.Caught) != 1 || got.Caught[0] != event.Caught[0] || !bytes.Equal(got.Sent, event.Sent) {
+		t.Fatalf("JSON event lost content: %+v", got)
 	}
 }
 

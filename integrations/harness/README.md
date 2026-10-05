@@ -44,6 +44,10 @@ the next user turn. `/cover fallback off` restores the default fail-closed mode.
 Existing requests and tool continuations are not replayed directly on failure.
 The provider's original connection settings must work independently of Cover.
 
+On each successful status check, the plugin adopts the proxy URL advertised by
+the daemon, so listener changes take effect on the next turn. If status cannot
+be read, it retains the last-known URL. `COVER_BASE_URL` always takes priority.
+
 OMP's plugin enable/disable controls manage plugin loading. They are separate
 from starting/stopping the Cover daemon or its automatic fallback policy.
 

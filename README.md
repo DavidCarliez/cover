@@ -134,7 +134,7 @@ configuration is documented in [`configs/config.example.yaml`](configs/config.ex
 | `cover inspect request.json` | Preview exactly what Cover would forward |
 | `cover doctor [--json]` | Run configuration, privacy, daemon, and routing checks |
 | `cover monitor` | Show recent safe metadata and follow new events |
-| `cover monitor --show-content` | Show sensitive live transformations and outbound JSON |
+| `cover monitor --show-content` | Show one sensitive original → replacement pair per line; add `--json` for full events |
 | `cover models pull` | Download the optional local detector runtime and model |
 | `cover models status` | Report local detector installation and configuration |
 | `cover completion` | Generate shell completion scripts |
@@ -279,9 +279,10 @@ cover monitor --show-content --once
 cover monitor --show-content --json
 ```
 
-This opt-in view shows each caught original and replacement, followed by the
-exact transformed JSON handed to the upstream transport. It is live-only and
-never added to the audit log. Capture starts after an authenticated local
+This opt-in view prints only `"original" -> "replacement"`, one pair per line.
+Control characters are escaped so values cannot span multiple terminal lines.
+Add `--json` to include the full event and exact transformed outbound JSON.
+The view is live-only and never added to the audit log. Capture starts after an authenticated local
 viewer connects and stops when it disconnects. The stream is loopback-only,
 uses a token derived from the installation key, and disconnects slow viewers.
 
@@ -325,6 +326,11 @@ Keep Cover's `upstream` pointed at the real router URL. Use
 [`configs/codex-router.example.yaml`](configs/codex-router.example.yaml) as a
 starting point. The selected model can be OpenAI, Anthropic, Gemini, DeepSeek,
 or another model because Cover operates on the router's generic JSON traffic.
+
+If a router omits the response `Content-Type`, Cover recognizes SSE streams
+that start with `event:`, `data:`, or a comment (`:`). It restores replacements
+split across delta events and sends `Content-Type: text/event-stream` to the
+client. Explicit response media types remain authoritative.
 
 Responses API [`encrypted_content`](https://developers.openai.com/api/docs/guides/reasoning#encrypted-reasoning-items)
 fields are opaque and cryptographically verified. Cover leaves them unchanged

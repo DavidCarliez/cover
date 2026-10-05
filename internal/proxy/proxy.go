@@ -4,6 +4,7 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/subtle"
 	"encoding/json"
@@ -217,7 +218,23 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	resp.Body = &idleReadCloser{ReadCloser: resp.Body, timeout: p.options.ResponseIdleTimeout}
 
 	ct := resp.Header.Get("Content-Type")
-	streaming := strings.Contains(ct, "text/event-stream") || resp.Header.Get("Transfer-Encoding") == "chunked"
+	sse := strings.Contains(ct, "text/event-stream")
+	var responseBody io.Reader = resp.Body
+	if ct == "" {
+		// Some compatible routers omit the media type on SSE responses.
+		// Keep the sniff bounded and replay every byte through the selected writer.
+		buffered := bufio.NewReader(resp.Body)
+		prefix, _ := buffered.Peek(6)
+		responseBody = buffered
+		sse = bytes.HasPrefix(prefix, []byte("event:")) ||
+			bytes.HasPrefix(prefix, []byte("data:")) ||
+			bytes.HasPrefix(prefix, []byte(":"))
+		if sse {
+			ct = "text/event-stream"
+			resp.Header.Set("Content-Type", ct)
+		}
+	}
+	streaming := sse || resp.Header.Get("Transfer-Encoding") == "chunked"
 	responseBytes := 0
 	if streaming {
 		copyResponseHeaders(w.Header(), resp.Header)
@@ -227,12 +244,12 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Close() error
 		}
 		counted := &countingWriter{w: w}
-		if strings.Contains(ct, "text/event-stream") {
+		if sse {
 			rw = NewSSERestoringWriterForSessionWithLimit(counted, p.redactor, session, p.options.MaxSSEEventBytes)
 		} else {
 			rw = NewRestoringWriterForSession(counted, p.redactor, session)
 		}
-		if _, err := io.Copy(rw, &cappedReader{r: resp.Body, remaining: p.options.MaxResponseBytes}); err != nil {
+		if _, err := io.Copy(rw, &cappedReader{r: responseBody, remaining: p.options.MaxResponseBytes}); err != nil {
 			p.logf("status=502 error=%s", streamErrorCode(err))
 			// Headers may already be sent. Abort the transport so the client
 			// cannot mistake a truncated stream for successful completion.
@@ -243,7 +260,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		responseBytes = counted.n
 	} else {
-		respBody, err := readAtMost(resp.Body, p.options.MaxResponseBytes)
+		respBody, err := readAtMost(responseBody, p.options.MaxResponseBytes)
 		if err != nil {
 			if errors.Is(err, errBodyTooLarge) {
 				p.logf("status=%d error=response_too_large", http.StatusBadGateway)

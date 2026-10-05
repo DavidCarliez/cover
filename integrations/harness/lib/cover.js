@@ -142,7 +142,7 @@ export function createCoverExtension(pi, options = {}) {
   let status = readStatus();
   let bypassed = state.enabled && state.autoFallback && !status.running;
   const explicitBaseURL = env.COVER_BASE_URL;
-  const baseURL = explicitBaseURL || status.base_url || "http://127.0.0.1:8317";
+  let baseURL = explicitBaseURL || status.base_url || "http://127.0.0.1:8317";
   const registered = new Set();
 
   if (Object.keys(state.routes).length === 0) {
@@ -175,6 +175,7 @@ export function createCoverExtension(pi, options = {}) {
 
   const reconcile = async (ctx) => {
     status = readStatus();
+    if (!explicitBaseURL && !status.error && status.base_url) baseURL = status.base_url;
     let available = status.running;
     if (state.enabled && state.autoFallback && available) {
       try {
