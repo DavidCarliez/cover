@@ -128,10 +128,10 @@ function notify(ctx, message, level = "info") {
   if (ctx?.ui?.notify) ctx.ui.notify(shortMessage(message), level);
 }
 
-function setIndicator(ctx, state, detail = "") {
-  if (!ctx?.ui?.setStatus) return;
-  const label = state === "direct" ? "cover: DIRECT — unprotected" : state === "protected" ? "cover: protected" : state === "off" ? "cover: off" : "cover: blocked";
-  ctx.ui.setStatus(STATUS_KEY, detail ? `${label} (${detail})` : label);
+function indicatorIcon(state) {
+  // The state describes only the active model's provider route.
+  // A registered fail-closed route stays locked even while Cover is unavailable.
+  return state === "protected" || state === "blocked" ? "\u{1F512}" : "\u{1F513}";
 }
 
 export function createCoverExtension(pi, options = {}) {
@@ -164,6 +164,40 @@ export function createCoverExtension(pi, options = {}) {
   };
 
   const save = () => writeState(savedStatePath, state);
+  const currentModel = (ctx) => typeof ctx?.models?.current === "function" ? ctx.models.current() : ctx?.model;
+  const coverage = (ctx, model = currentModel(ctx)) => {
+    if (!state.enabled) return "off";
+    if (bypassed) return "direct";
+    if (Object.keys(state.routes).length === 0) return "setup";
+    if (!model) return "unknown";
+    if (!registered.has(model.provider)) return "unconfigured";
+    return status.running ? "protected" : "blocked";
+  };
+  const updateIndicator = (ctx, model) => {
+    if (ctx?.mode === "tui" && typeof ctx?.models?.current === "function" && typeof ctx?.ui?.setWidget === "function") {
+      // OMP redraws on role/model changes but does not emit Pi's model_select.
+      // Read its live model during rendering instead of caching a stale icon.
+      ctx.ui.setStatus?.(STATUS_KEY, undefined);
+      ctx.ui.setWidget(STATUS_KEY, () => ({
+        render: () => [indicatorIcon(coverage(ctx))],
+        invalidate() {},
+      }), { placement: "belowEditor" });
+      return;
+    }
+    ctx?.ui?.setStatus?.(STATUS_KEY, indicatorIcon(coverage(ctx, model)));
+  };
+  const describeCoverage = (ctx) => {
+    const provider = currentModel(ctx)?.provider || "none";
+    switch (coverage(ctx)) {
+      case "off": return `Active provider: ${provider} — Cover is off; not protected by this plugin.`;
+      case "direct": return `Active provider: ${provider} — direct fallback is active; not protected by this plugin.`;
+      case "setup": return `Active provider: ${provider} — setup needed; no Cover providers are configured.`;
+      case "unknown": return "Active provider: none — coverage cannot be determined until a model is selected.";
+      case "unconfigured": return `Active provider: ${provider} — not configured for Cover; not protected by this plugin.`;
+      case "blocked": return `Active provider: ${provider} — routed through Cover, fail-closed while Cover is unavailable.`;
+      default: return `Active provider: ${provider} — routed through Cover.`;
+    }
+  };
   const refreshActiveModel = async (ctx) => {
     const current = ctx?.model || ctx?.models?.current?.();
     if (!current || typeof pi.setModel !== "function") return;
@@ -190,42 +224,41 @@ export function createCoverExtension(pi, options = {}) {
     bypassed = next;
     applyRoutes();
     await refreshActiveModel(ctx);
-    setIndicator(ctx, !state.enabled ? "off" : bypassed ? "direct" : available ? "protected" : "blocked");
-    if (changed && bypassed) notify(ctx, "Cover is unavailable. Automatic fallback is enabled: new turns send directly, without privacy protection.", "warning");
-    if (changed && !bypassed && state.enabled) notify(ctx, "Cover is available again. New turns use privacy protection.");
+    updateIndicator(ctx);
+    if (changed && bypassed) notify(ctx, `Cover is unavailable. Automatic fallback restored direct routes for configured providers.\n${describeCoverage(ctx)}`, "warning");
+    if (changed && !bypassed && state.enabled) notify(ctx, `Cover routes restored for configured providers.\n${describeCoverage(ctx)}`);
   };
 
   // Reconcile before a new user turn, never retry a failed request directly.
   pi.on("before_agent_start", async (_event, ctx) => { await reconcile(ctx); });
+  pi.on("model_select", (event, ctx) => { updateIndicator(ctx, event.model); });
+  pi.on("session_shutdown", (_event, ctx) => {
+    ctx?.ui?.setWidget?.(STATUS_KEY, undefined);
+    ctx?.ui?.setStatus?.(STATUS_KEY, undefined);
+  });
 
   pi.on("session_start", async (_event, ctx) => {
     // OMP resolves the initial model before it drains queued extension provider
     // overrides. Reapply and reselect here so the first request uses Cover too.
     await reconcile(ctx);
     if (bypassed) {
-      notify(ctx, "Cover is unavailable. Automatic fallback is enabled: sending directly without privacy protection.", "warning");
+      notify(ctx, `Cover is unavailable. Automatic fallback is enabled.\n${describeCoverage(ctx)}`, "warning");
       return;
     }
-    if (!state.enabled) {
-      setIndicator(ctx, "off");
-      return;
-    }
+    if (!state.enabled) return;
     if (Object.keys(state.routes).length === 0) {
-      setIndicator(ctx, "blocked", "setup needed");
-      notify(ctx, "Cover loaded, but no providers are configured. Run /cover providers <provider> and then /cover on.", "warning");
+      notify(ctx, `No Cover providers are configured. Run /cover providers <provider> and then /cover on.\n${describeCoverage(ctx)}`, "warning");
       return;
     }
     if (!status.installed) {
-      setIndicator(ctx, "blocked", "binary missing");
-      notify(ctx, "Cover is enabled and remains fail-closed, but the cover binary was not found. Install it from https://github.com/DavidCarliez/cover.", "error");
+      notify(ctx, `The cover binary was not found. Install it from https://github.com/DavidCarliez/cover. Configured provider routes remain pointed at Cover.\n${describeCoverage(ctx)}`, "error");
       return;
     }
     if (!status.running) {
-      setIndicator(ctx, "blocked", "daemon stopped");
-      notify(ctx, "Cover is enabled and remains fail-closed, but the daemon is stopped. Run /cover start.", "error");
+      notify(ctx, `The Cover daemon is stopped. Run /cover start. Configured provider routes remain pointed at Cover.\n${describeCoverage(ctx)}`, "error");
       return;
     }
-    setIndicator(ctx, "protected", Object.keys(state.routes).join(","));
+    if (coverage(ctx) !== "protected") notify(ctx, describeCoverage(ctx), "warning");
   });
 
   pi.registerCommand("cover", {
@@ -237,9 +270,8 @@ export function createCoverExtension(pi, options = {}) {
           case "status": {
             await reconcile(ctx);
             const providers = Object.keys(state.routes).join(", ") || "none";
-            const mode = state.enabled ? (bypassed ? "DIRECT — unprotected" : status.running ? "protected" : "fail-closed") : "off";
-            notify(ctx, `Cover: ${mode}\nAutomatic fallback: ${state.autoFallback ? "on" : "off"}\nProviders: ${providers}\nProxy: ${baseURL}\nDaemon: ${status.running ? "running" : "stopped"}`,
-              state.enabled && !status.running ? "warning" : "info");
+            notify(ctx, `${describeCoverage(ctx)}\nAutomatic fallback: ${state.autoFallback ? "on" : "off"}\nConfigured providers: ${providers}\nProxy: ${baseURL}\nDaemon: ${status.running ? "running" : "stopped"}`,
+              coverage(ctx) === "protected" ? "info" : "warning");
             break;
           }
           case "on":
@@ -247,7 +279,7 @@ export function createCoverExtension(pi, options = {}) {
             state.enabled = true;
             save();
             await reconcile(ctx);
-            notify(ctx, bypassed ? "Cover unavailable: direct fallback active." : status.running ? "Cover protection enabled." : "Cover protection enabled fail-closed; start the daemon with /cover start.", status.running ? "info" : "warning");
+            notify(ctx, `Cover enabled for configured providers.\n${describeCoverage(ctx)}`, coverage(ctx) === "protected" ? "info" : "warning");
             break;
           case "off":
             state.enabled = false;
@@ -255,7 +287,7 @@ export function createCoverExtension(pi, options = {}) {
             save();
             applyRoutes();
             await refreshActiveModel(ctx);
-            setIndicator(ctx, "off");
+            updateIndicator(ctx);
             notify(ctx, "Cover protection disabled. Configured providers now connect directly.", "warning");
             break;
           case "fallback": {
@@ -263,7 +295,7 @@ export function createCoverExtension(pi, options = {}) {
             state.autoFallback = rest[0] === "on";
             save();
             await reconcile(ctx);
-            notify(ctx, state.autoFallback ? "Automatic fallback enabled. If Cover is unavailable, new turns send directly without privacy protection." : "Automatic fallback disabled. Cover remains fail-closed when enabled.", state.autoFallback ? "warning" : "info");
+            notify(ctx, state.autoFallback ? "Automatic fallback enabled. If Cover is unavailable, configured providers connect directly on new turns without Cover protection." : "Automatic fallback disabled. When Cover is enabled, configured provider routes remain pointed at Cover if it stops. Unconfigured providers are not covered.", state.autoFallback ? "warning" : "info");
             break;
           }
           case "providers": {
@@ -276,7 +308,8 @@ export function createCoverExtension(pi, options = {}) {
             save();
             applyRoutes();
             await refreshActiveModel(ctx);
-            notify(ctx, `Cover providers updated: ${Object.keys(state.routes).join(", ") || "none"}.`);
+            updateIndicator(ctx);
+            notify(ctx, `Cover providers updated: ${Object.keys(state.routes).join(", ") || "none"}.\n${describeCoverage(ctx)}`);
             break;
           }
           case "start":

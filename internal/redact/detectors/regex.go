@@ -37,6 +37,10 @@ type CustomPattern struct {
 	Detector      string   `yaml:"detector,omitempty"`
 	Pattern       string   `yaml:"pattern,omitempty"`
 	Keys          []string `yaml:"keys,omitempty"`
+	Headers       []string `yaml:"headers,omitempty"`
+	Cookies       []string `yaml:"cookies,omitempty"`
+	QueryParams   []string `yaml:"query_params,omitempty"`
+	FormFields    []string `yaml:"form_fields,omitempty"`
 	Category      string   `yaml:"category,omitempty"`
 	Action        string   `yaml:"action,omitempty"`
 	Generator     string   `yaml:"generator,omitempty"`
@@ -170,9 +174,15 @@ func NewRegexDetector(categories []string, custom []CustomPattern) (*RegexDetect
 		if c.Enabled != nil && !*c.Enabled {
 			continue
 		}
-		if len(c.Keys) > 0 {
-			if c.Pattern != "" || c.Detector != "" {
-				return nil, fmt.Errorf("custom rule %q cannot combine keys with pattern or detector", c.Name)
+		selectors := 0
+		for _, names := range [...][]string{c.Keys, c.Headers, c.Cookies, c.QueryParams, c.FormFields} {
+			if len(names) > 0 {
+				selectors++
+			}
+		}
+		if selectors > 0 {
+			if selectors != 1 || c.Pattern != "" || c.Detector != "" || c.CaptureGroup != "" {
+				return nil, fmt.Errorf("custom rule %q must use exactly one selector kind without pattern, detector, or capture_group", c.Name)
 			}
 			continue
 		}

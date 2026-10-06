@@ -79,6 +79,145 @@ test("environment routes override persisted routes", () => {
   assert.equal(state.autoFallback, false);
 });
 
+function indicatorHarness({ routes = { example: "" }, enabled = true, autoFallback = false, running = true, installed = true, model = { provider: "example", id: "test" } } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "cover-indicator-"));
+  const path = join(dir, "harness.json");
+  writeFileSync(path, JSON.stringify({ routes, enabled, autoFallback }));
+  const registered = new Map(), commands = new Map(), events = new Map();
+  const indicators = [], notices = [];
+  let routeChanges = 0;
+  const pi = {
+    registerProvider(name, config) { registered.set(name, config); routeChanges += 1; },
+    unregisterProvider(name) { registered.delete(name); routeChanges += 1; },
+    registerCommand(name, command) { commands.set(name, command); },
+    on(name, handler) { events.set(name, handler); },
+  };
+  const ctx = {
+    model,
+    ui: {
+      notify(message, level) { notices.push({ message, level }); },
+      setStatus(_name, value) { indicators.push(value); },
+    },
+  };
+  const extension = createCoverExtension(pi, {
+    env: { HOME: dir, COVER_BASE_URL: "http://127.0.0.1:9999" },
+    statePath: path,
+    readStatus: () => ({ running, installed }),
+    probe: async () => running,
+  });
+  return { ctx, registered, events, indicators, notices, extension,
+    routeChanges: () => routeChanges,
+    command: (args) => commands.get("cover").handler(args, ctx) };
+}
+
+for (const scenario of [
+  { name: "configured active provider", locked: true },
+  { name: "registered fail-closed route", running: false, locked: true },
+  { name: "registered route without the binary", running: false, installed: false, locked: true },
+  { name: "unconfigured active provider", model: { provider: "other", id: "test" } },
+  { name: "unconfigured active provider while stopped", model: { provider: "other", id: "test" }, running: false },
+  { name: "missing provider setup", routes: {} },
+  { name: "missing active model", model: null },
+  { name: "manual off", enabled: false },
+  { name: "direct fallback", running: false, autoFallback: true },
+]) {
+  test(`status reflects ${scenario.name} at startup and on demand`, async () => {
+    const harness = indicatorHarness(scenario);
+    await harness.events.get("session_start")({}, harness.ctx);
+    const expected = scenario.locked ? "\u{1F512}" : "\u{1F513}";
+    assert.deepEqual(harness.indicators, [expected], "session startup must retain the reconcile result");
+    await harness.command("status");
+    assert.equal(harness.indicators.at(-1), expected);
+    assert.equal(harness.notices.at(-1).level, scenario.locked && scenario.running !== false ? "info" : "warning");
+    assert.equal(harness.registered.has("example"), scenario.enabled !== false && !scenario.autoFallback && "example" in (scenario.routes || { example: "" }));
+  });
+}
+
+test("model selection refreshes coverage without changing provider routes or fallback", async () => {
+  const harness = indicatorHarness();
+  await harness.events.get("session_start")({}, harness.ctx);
+  const routes = [...harness.registered];
+  const state = harness.extension.getState();
+  const routeChanges = harness.routeChanges();
+  const directModel = { provider: "other", id: "test" };
+  await harness.events.get("model_select")({ model: directModel }, harness.ctx);
+  assert.equal(harness.indicators.at(-1), "\u{1F513}", "the selected model wins over stale event context");
+  await harness.events.get("model_select")({ model: harness.ctx.model }, harness.ctx);
+  assert.equal(harness.indicators.at(-1), "\u{1F512}");
+  assert.deepEqual([...harness.registered], routes);
+  assert.equal(harness.routeChanges(), routeChanges);
+  assert.deepEqual(harness.extension.getState(), state);
+});
+
+test("provider reconfiguration updates active coverage immediately", async () => {
+  const harness = indicatorHarness();
+  await harness.events.get("session_start")({}, harness.ctx);
+  await harness.command("providers other=/");
+  assert.equal(harness.indicators.at(-1), "\u{1F513}");
+  assert.equal(harness.registered.has("example"), false);
+  await harness.command("providers example=/");
+  assert.equal(harness.indicators.at(-1), "\u{1F512}");
+  assert.equal(harness.registered.has("other"), false);
+});
+
+test("coverage uses the live model facade when the context snapshot is stale", async () => {
+  const harness = indicatorHarness();
+  harness.ctx.models = { current: () => ({ provider: "other", id: "test" }) };
+  await harness.events.get("session_start")({}, harness.ctx);
+  assert.equal(harness.indicators.at(-1), "\u{1F513}");
+  await harness.command("status");
+  assert.equal(harness.indicators.at(-1), "\u{1F513}");
+});
+
+test("OMP redraws active coverage on role switches without model events or route changes", async () => {
+  const harness = indicatorHarness({ running: false });
+  let model = harness.ctx.model, widget;
+  harness.ctx.mode = "tui";
+  harness.ctx.models = { current: () => model };
+  harness.ctx.ui.setWidget = (_name, factory) => { widget = factory?.(); };
+  await harness.events.get("session_start")({}, harness.ctx);
+  assert.deepEqual(widget.render(80), ["\u{1F512}"], "a registered fail-closed route remains locked");
+  assert.deepEqual(harness.indicators, [undefined], "the widget must replace, not duplicate, static status");
+  const routeChanges = harness.routeChanges();
+  const routes = [...harness.registered];
+  const state = harness.extension.getState();
+
+  model = { provider: "other", id: "test" };
+  assert.deepEqual(widget.render(80), ["\u{1F513}"]);
+  model = undefined;
+  assert.deepEqual(widget.render(80), ["\u{1F513}"], "a missing live model must not reuse the old context model");
+  model = harness.ctx.model;
+  assert.deepEqual(widget.render(80), ["\u{1F512}"]);
+  assert.equal(harness.routeChanges(), routeChanges);
+  assert.deepEqual([...harness.registered], routes);
+  assert.deepEqual(harness.extension.getState(), state);
+
+  await harness.command("off");
+  assert.deepEqual(widget.render(80), ["\u{1F513}"]);
+  await harness.command("on");
+  assert.deepEqual(widget.render(80), ["\u{1F512}"]);
+  await harness.command("fallback on");
+  assert.deepEqual(widget.render(80), ["\u{1F513}"]);
+  await harness.command("fallback off");
+  assert.deepEqual(widget.render(80), ["\u{1F512}"]);
+  await harness.command("providers other=/");
+  assert.deepEqual(widget.render(80), ["\u{1F513}"]);
+  await harness.command("providers example=/");
+  assert.deepEqual(widget.render(80), ["\u{1F512}"]);
+  await harness.events.get("session_shutdown")({}, harness.ctx);
+  assert.equal(widget, undefined, "session shutdown must remove the icon");
+  assert.equal(harness.indicators.at(-1), undefined);
+});
+
+test("OMP non-TUI clients retain plain status rather than unsupported component widgets", async () => {
+  const harness = indicatorHarness();
+  harness.ctx.mode = "rpc";
+  harness.ctx.models = { current: () => harness.ctx.model };
+  harness.ctx.ui.setWidget = () => { assert.fail("RPC does not render component widgets"); };
+  await harness.events.get("session_start")({}, harness.ctx);
+  assert.equal(harness.indicators.at(-1), "\u{1F512}");
+});
+
 test("opt-in fallback switches new turns directly and restores protection on recovery", async () => {
   const dir = mkdtempSync(join(tmpdir(), "cover-fallback-"));
   const path = join(dir, "harness.json");
@@ -102,22 +241,27 @@ test("opt-in fallback switches new turns directly and restores protection on rec
   running = false;
   await events.get("before_agent_start")({}, ctx);
   assert.equal(activeURL, "http://127.0.0.1:9999", "default must remain fail-closed");
+  assert.equal(indicators.at(-1), "\u{1F512}", "fail-closed must retain the locked indicator");
   await commands.get("cover").handler("fallback on", ctx);
   assert.equal(activeURL, "https://direct.example");
-  assert.match(indicators.at(-1), /DIRECT/);
+  assert.equal(indicators.at(-1), "\u{1F513}", "direct fallback must show the unlocked indicator");
   assert.equal(JSON.parse(readFileSync(path, "utf8")).autoFallback, true);
   running = true;
   await events.get("before_agent_start")({}, ctx);
   assert.equal(activeURL, "http://127.0.0.1:9999");
+  assert.equal(indicators.at(-1), "\u{1F512}", "recovered protection must show the locked indicator");
   reachable = false;
   await events.get("before_agent_start")({}, ctx);
   assert.equal(activeURL, "https://direct.example", "hung daemon should permit opted-in fallback");
+  assert.equal(indicators.at(-1), "\u{1F513}", "an unreachable daemon with fallback must show unlocked");
   await commands.get("cover").handler("fallback off", ctx);
   assert.equal(activeURL, "http://127.0.0.1:9999");
+  assert.equal(indicators.at(-1), "\u{1F512}", "disabling fallback must restore fail-closed locking");
   await commands.get("cover").handler("off", ctx);
   reachable = true;
   await events.get("before_agent_start")({}, ctx);
   assert.equal(activeURL, "https://direct.example", "manual off must stay off");
+  assert.equal(indicators.at(-1), "\u{1F513}", "manual off must show the unlocked indicator");
 });
 
 test("reconcile retains the last listener on status failure and adopts the recovered listener", async (t) => {
@@ -220,7 +364,7 @@ test("extension registers routes and persists on/off without touching other prov
   const registered = new Map();
   const commands = new Map();
   const events = new Map();
-  const notices = [];
+  const indicators = [];
   const pi = {
     registerProvider(name, config) { registered.set(name, config); },
     unregisterProvider(name) { registered.delete(name); },
@@ -237,12 +381,12 @@ test("extension registers routes and persists on/off without touching other prov
   assert.deepEqual(registered.get("openai-codex"), { baseUrl: "http://127.0.0.1:9999/v1" });
   assert.deepEqual(registered.get("deepseek"), { baseUrl: "http://127.0.0.1:9999" });
 
-  const ctx = { ui: { notify(message, level) { notices.push({ message, level }); }, setStatus() {} } };
+  const ctx = { model: { provider: "openai-codex", id: "test" }, ui: { notify() {}, setStatus(_name, value) { indicators.push(value); } } };
   await commands.get("cover").handler("off", ctx);
   assert.equal(registered.size, 0);
   assert.equal(JSON.parse(readFileSync(path, "utf8")).enabled, false);
   await commands.get("cover").handler("on", ctx);
   assert.equal(registered.size, 2);
   await events.get("session_start")({}, ctx);
-  assert.ok(notices.some(({ message }) => message.includes("binary was not found")));
+  assert.equal(indicators.at(-1), "\u{1F512}", "the configured provider remains routed through Cover without the binary");
 });

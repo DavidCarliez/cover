@@ -285,7 +285,7 @@ func (c *Config) Validate() error {
 	}
 	rules := make([]detectors.CustomPattern, 0, len(c.Rules)+len(c.Detectors.Regex.CustomPatterns))
 	for _, rule := range c.Detectors.Regex.CustomPatterns {
-		if err := validateRuleKeys(rule.Name, rule); err != nil {
+		if err := validateRuleSelectors(rule.Name, rule); err != nil {
 			return err
 		}
 		if rule.Action != "" {
@@ -297,7 +297,7 @@ func (c *Config) Validate() error {
 	}
 	for name, rule := range c.Rules {
 		rule.Name = name
-		if err := validateRuleKeys(name, rule); err != nil {
+		if err := validateRuleSelectors(name, rule); err != nil {
 			return err
 		}
 		if rule.Category == "" {
@@ -340,17 +340,24 @@ func validateListen(addr string, allowRemote bool) error {
 	return nil
 }
 
-func validateRuleKeys(name string, rule detectors.CustomPattern) error {
-	if len(rule.Keys) == 0 {
+func validateRuleSelectors(name string, rule detectors.CustomPattern) error {
+	selectors := 0
+	for _, names := range [...][]string{rule.Keys, rule.Headers, rule.Cookies, rule.QueryParams, rule.FormFields} {
+		if len(names) == 0 {
+			continue
+		}
+		selectors++
+		for _, key := range names {
+			if strings.TrimSpace(key) == "" || strings.ContainsAny(key, "\r\n\x00") {
+				return fmt.Errorf("rule %q contains an empty or invalid selector name", name)
+			}
+		}
+	}
+	if selectors == 0 {
 		return nil
 	}
-	if rule.Pattern != "" || rule.Detector != "" {
-		return fmt.Errorf("rule %q cannot combine keys with pattern or detector", name)
-	}
-	for _, key := range rule.Keys {
-		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("rule %q contains an empty key", name)
-		}
+	if selectors != 1 || rule.Pattern != "" || rule.Detector != "" || rule.CaptureGroup != "" {
+		return fmt.Errorf("rule %q must use exactly one selector kind without pattern, detector, or capture_group", name)
 	}
 	return nil
 }

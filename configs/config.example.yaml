@@ -69,9 +69,12 @@ mappings:
 media:
   images: allow # allow, warn, or block
 
-# Declarative policy rules. A rule selects data with pattern,
-# detector: builtin_<type>, or a list of JSON object keys. Key matching is
-# case-insensitive by default and applies to the entire string value.
+# Declarative policy rules. Choose one selector: pattern, detector, keys,
+# headers, cookies, query_params, or form_fields. Named selectors are
+# case-insensitive by default; headers always match case-insensitively.
+# HTML form values also use keys/form_fields via names, IDs, labels and
+# type=password. Attribute keys and decoded text use the same policies.
+# HTML inspection is deterministic; it does not require llm_fallback.
 # Actions: pseudonymize, placeholder, mask, redact, block, allow.
 rules:
   password_fields:
@@ -79,6 +82,31 @@ rules:
     category: password
     action: pseudonymize
     generator: password
+    priority: 220
+  auth_headers:
+    headers: [Authorization, X-Api-Key]
+    action: pseudonymize
+    generator: secret
+    priority: 220
+  session_cookies:
+    cookies: [session, sessionid]
+    action: pseudonymize
+    generator: alias
+    priority: 220
+  query_tokens:
+    query_params: [access_token, api_key]
+    action: pseudonymize
+    generator: secret
+    priority: 220
+  form_credentials:
+    form_fields: [password, client_secret]
+    action: pseudonymize
+    generator: password
+    priority: 220
+  numeric_identifiers:
+    keys: [customer_number]
+    action: pseudonymize
+    generator: number
     priority: 220
   internal_ipv4:
     detector: builtin_ipv4
@@ -124,9 +152,9 @@ detectors:
 
   # Optional local-LLM semantic detection pass for free-form sensitive
   # content regex can't catch (e.g. names, internal codenames, addresses).
-  # When text explicitly labels values as test/example/synthetic data,
-  # the LLM pass and secret-style regex matches are skipped; structured
-  # PII (SSN, credit card, phone, IBAN, email) is always redacted.
+  # The semantic prompt exempts self-labeled test/example data. This does
+  # not disable deterministic field/regex policies in proxied requests.
+  # Semantic detection is supplemental, not proof that content is public.
   # Run `cover models pull` to download the llama-server binary and a
   # small GGUF model and populate server_path/model_path below, then set
   # enabled: true. If no prebuilt llama-server is available for your
@@ -143,9 +171,9 @@ detectors:
     # Local port llama-server listens on.
     port: 8418
 
-    # String fields shorter than min_text_len or longer than max_text_len
-    # (in bytes) are skipped, to avoid wasting time on trivial or huge
-    # fields.
+    # String fields outside this byte range skip semantic inspection.
+    # Regex/field rules still apply, but long pages are not automatically
+    # split into smaller pieces for the semantic detector.
     min_text_len: 8
     max_text_len: 2000
 

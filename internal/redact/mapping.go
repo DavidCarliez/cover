@@ -3,7 +3,6 @@ package redact
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -31,6 +30,7 @@ type StoreOptions struct {
 type sessionMappings struct {
 	forward map[string]string
 	reverse map[string]string
+	numeric map[string]bool
 	updated time.Time
 	restore *restorationSnapshot
 }
@@ -39,10 +39,10 @@ type sessionMappings struct {
 // without holding Store.mu. A session invalidates its snapshot whenever a new
 // mapping is added.
 type restorationSnapshot struct {
-	replacer     *strings.Replacer
-	jsonReplacer *strings.Replacer
-	fakes        [][]byte
-	maxFakeLen   int
+	replacer   *strings.Replacer
+	numbers    map[string]string
+	fakes      [][]byte
+	maxFakeLen int
 }
 
 func (s *restorationSnapshot) restoreBytes(data []byte) ([]byte, bool) {
@@ -57,6 +57,11 @@ func (s *restorationSnapshot) restoreBytes(data []byte) ([]byte, bool) {
 func (s *restorationSnapshot) restoreString(value string) (string, bool) {
 	restored := s.replacer.Replace(value)
 	return restored, restored != value
+}
+
+func (s *restorationSnapshot) restoreNumber(value string) (string, bool) {
+	original, ok := s.numbers[value]
+	return original, ok
 }
 
 // Store owns bounded, in-memory-only, bijective mappings separated by session.
@@ -119,20 +124,35 @@ func (s *Store) sessionLocked(id string, create bool) (*sessionMappings, error) 
 	if len(s.sessions) >= s.opts.MaxSessions {
 		return nil, fmt.Errorf("mapping session capacity reached")
 	}
-	m := &sessionMappings{forward: map[string]string{}, reverse: map[string]string{}, updated: now}
+	m := &sessionMappings{forward: map[string]string{}, reverse: map[string]string{}, numeric: map[string]bool{}, updated: now}
 	s.sessions[id] = m
 	return m, nil
 }
 
-// Map returns a stable reversible fake. generate receives a collision retry number.
+// Map returns a stable reversible text fake. generate receives a collision
+// retry number.
 func (s *Store) Map(session, original string, occupied map[string]struct{}, generate func(int) (string, error)) (string, error) {
+	return s.mapValue(session, original, original, false, occupied, generate)
+}
+
+// MapNumber keeps numeric mappings in a separate forward namespace so a JSON
+// number and a JSON string with the same spelling can coexist in one session.
+func (s *Store) MapNumber(session, original string, occupied map[string]struct{}, generate func(int) (string, error)) (string, error) {
+	return s.mapValue(session, numberMappingIdentity(original), original, true, occupied, generate)
+}
+
+func numberMappingIdentity(original string) string {
+	return "\x00number:" + original
+}
+
+func (s *Store) mapValue(session, identity, original string, numeric bool, occupied map[string]struct{}, generate func(int) (string, error)) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	m, err := s.sessionLocked(session, true)
 	if err != nil {
 		return "", err
 	}
-	if fake, ok := m.forward[original]; ok {
+	if fake, ok := m.forward[identity]; ok {
 		if collidesWithOccupied(fake, occupied) {
 			return "", fmt.Errorf("existing replacement collides with request context")
 		}
@@ -141,7 +161,7 @@ func (s *Store) Map(session, original string, occupied map[string]struct{}, gene
 	if len(m.forward) >= s.opts.MaxEntriesPerSession {
 		return "", fmt.Errorf("mapping entry capacity reached")
 	}
-	for attempt := 0; attempt < 256; attempt++ {
+	for attempt := range 256 {
 		fake, err := generate(attempt)
 		if err != nil {
 			return "", fmt.Errorf("replacement generation failed")
@@ -152,14 +172,20 @@ func (s *Store) Map(session, original string, occupied map[string]struct{}, gene
 		if collidesWithOccupied(fake, occupied) {
 			continue
 		}
-		if _, isOriginal := m.forward[fake]; isOriginal {
+		if _, isTextOriginal := m.forward[fake]; isTextOriginal {
 			continue
 		}
-		if other, exists := m.reverse[fake]; exists && other != original {
+		if _, isNumberOriginal := m.forward[numberMappingIdentity(fake)]; isNumberOriginal {
 			continue
 		}
-		m.forward[original] = fake
+		if _, exists := m.reverse[fake]; exists {
+			continue
+		}
+		m.forward[identity] = fake
 		m.reverse[fake] = original
+		if numeric {
+			m.numeric[fake] = true
+		}
 		m.restore = nil
 		return fake, nil
 	}
@@ -252,21 +278,24 @@ func (s *Store) restorationSnapshot(session string) *restorationSnapshot {
 
 	keys := sortedFakeKeys(m.reverse)
 	pairs := make([]string, 0, len(keys)*2)
-	jsonPairs := make([]string, 0, len(keys)*2)
+	numbers := make(map[string]string, len(m.numeric))
 	fakes := make([][]byte, 0, len(keys))
 	maxFakeLen := 0
 	for _, fake := range keys {
-		pairs = append(pairs, fake, m.reverse[fake])
-		encoded, _ := json.Marshal(m.reverse[fake])
-		jsonPairs = append(jsonPairs, fake, string(encoded[1:len(encoded)-1]))
+		original := m.reverse[fake]
+		if m.numeric[fake] {
+			numbers[fake] = original
+		} else {
+			pairs = append(pairs, fake, original)
+		}
 		fakes = append(fakes, []byte(fake))
 		if len(fake) > maxFakeLen {
 			maxFakeLen = len(fake)
 		}
 	}
 	m.restore = &restorationSnapshot{
-		replacer: strings.NewReplacer(pairs...), fakes: fakes, maxFakeLen: maxFakeLen,
-		jsonReplacer: strings.NewReplacer(jsonPairs...),
+		replacer: strings.NewReplacer(pairs...),
+		numbers:  numbers, fakes: fakes, maxFakeLen: maxFakeLen,
 	}
 	return m.restore
 }

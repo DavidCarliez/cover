@@ -29,7 +29,7 @@ func TestRestoreResponsePreservesUnchangedJSONBytes(t *testing.T) {
 func TestRestoreResponsePreservesEncryptedOnlyJSONExactly(t *testing.T) {
 	r := newTestRedactor(t)
 	fake := r.store.PlaceholderFor("customer@example.com")
-	body := []byte(fmt.Sprintf(" { \"encrypted_content\" : %q, \"sequence\" : 9007199254740993 } ", fake))
+	body := []byte(fmt.Sprintf(" { \"type\" : \"reasoning\", \"encrypted_content\" : %q, \"sequence\" : 9007199254740993 } ", fake))
 	if restored := r.RestoreResponse(body, "application/json"); !bytes.Equal(restored, body) {
 		t.Fatalf("encrypted-only response was rewritten:\n got: %q\nwant: %q", restored, body)
 	}
@@ -146,8 +146,11 @@ func TestRestoreResponseDoesNotAlterEncryptedContent(t *testing.T) {
 	redacted, _ := r.Redact([]byte(secret))
 	fake := string(redacted)
 	body, err := json.Marshal(map[string]any{
-		"output_text":       fake,
-		"encrypted_content": fake,
+		"output_text": fake,
+		"reasoning": map[string]any{
+			"type":              "reasoning",
+			"encrypted_content": fake,
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -160,8 +163,9 @@ func TestRestoreResponseDoesNotAlterEncryptedContent(t *testing.T) {
 	if got["output_text"] != secret {
 		t.Fatalf("normal response text was not restored: %q", got["output_text"])
 	}
-	if got["encrypted_content"] != fake {
-		t.Fatalf("encrypted_content was altered: %q", got["encrypted_content"])
+	reasoning := got["reasoning"].(map[string]any)
+	if reasoning["encrypted_content"] != fake {
+		t.Fatalf("encrypted_content was altered: %q", reasoning["encrypted_content"])
 	}
 }
 

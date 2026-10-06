@@ -49,6 +49,12 @@ type Redactor struct {
 	llmConcurrency        int
 	llmBatchSize          int
 	fieldRules            []FieldRule
+	fieldRulesValid       bool
+	hasKeyRules           bool
+	hasHeaderRules        bool
+	hasCookieRules        bool
+	hasQueryRules         bool
+	hasFormRules          bool
 }
 
 // New creates a Redactor backed by store, applying the given detectors in
@@ -69,6 +75,34 @@ func New(store *Store, llmBudget time.Duration, opts RedactorOptions, dets ...de
 		}
 		return fieldRules[i].Name < fieldRules[j].Name
 	})
+	fieldRulesValid := true
+	var hasKeyRules, hasHeaderRules, hasCookieRules, hasQueryRules, hasFormRules bool
+	for _, rule := range fieldRules {
+		kinds := 0
+		if len(rule.Keys) > 0 {
+			hasKeyRules = true
+			kinds++
+		}
+		if len(rule.Headers) > 0 {
+			hasHeaderRules = true
+			kinds++
+		}
+		if len(rule.Cookies) > 0 {
+			hasCookieRules = true
+			kinds++
+		}
+		if len(rule.QueryParams) > 0 {
+			hasQueryRules = true
+			kinds++
+		}
+		if len(rule.FormFields) > 0 {
+			hasFormRules = true
+			kinds++
+		}
+		if kinds != 1 {
+			fieldRulesValid = false
+		}
+	}
 	return &Redactor{
 		detectors:             dets,
 		store:                 store,
@@ -78,6 +112,12 @@ func New(store *Store, llmBudget time.Duration, opts RedactorOptions, dets ...de
 		llmConcurrency:        opts.LLMConcurrency,
 		llmBatchSize:          opts.LLMBatchSize,
 		fieldRules:            fieldRules,
+		fieldRulesValid:       fieldRulesValid,
+		hasKeyRules:           hasKeyRules,
+		hasHeaderRules:        hasHeaderRules,
+		hasCookieRules:        hasCookieRules,
+		hasQueryRules:         hasQueryRules,
+		hasFormRules:          hasFormRules,
 	}
 }
 
@@ -147,6 +187,9 @@ func (r *Redactor) RestoreForSession(data []byte, session string) []byte {
 	if snapshot == nil {
 		return data
 	}
+	if len(snapshot.numbers) > 0 {
+		return r.restoreJSONOrRawWithSnapshot(data, snapshot)
+	}
 	restored, _ := snapshot.restoreBytes(data)
 	return restored
 }
@@ -197,20 +240,6 @@ func (r *Redactor) SafeStreamCut(data []byte, session string) int {
 		}
 	}
 	return cut
-}
-
-var protocolKeys = map[string]bool{
-	"model":         true,
-	"name":          true,
-	"type":          true,
-	"role":          true,
-	"id":            true,
-	"tool_use_id":   true,
-	"stop_reason":   true,
-	"stop_sequence": true,
-	"cache_control": true,
-	"tools":         true,
-	"tool_choice":   true,
 }
 
 var llmSkipKeys = map[string]bool{
@@ -312,6 +341,10 @@ func (r *Redactor) regexMatched(text string) bool {
 }
 
 func (r *Redactor) collectLLMStrings(v any, skipLLM bool, seen map[[32]byte]string) {
+	r.collectLLMStringsAt(v, skipLLM, seen, protocolBusiness, "")
+}
+
+func (r *Redactor) collectLLMStringsAt(v any, skipLLM bool, seen map[[32]byte]string, parent protocolObjectKind, edge string) {
 	switch val := v.(type) {
 	case string:
 		if skipLLM {
@@ -322,20 +355,25 @@ func (r *Redactor) collectLLMStrings(v any, skipLLM bool, seen map[[32]byte]stri
 			seen[hash] = val
 		}
 	case map[string]any:
-		for k, vv := range val {
-			if protocolKeys[k] {
+		kind := classifyProtocolObject(val, parent, edge)
+		for key, vv := range val {
+			if opaqueProtocolField(kind, val, key, vv) || protocolRoutingField(kind, val, key) {
 				continue
 			}
-			r.collectLLMStrings(vv, skipLLM || llmSkipKeys[k], seen)
+			r.collectLLMStringsAt(vv, skipLLM || llmSkipKeys[key], seen, kind, key)
 		}
 	case []any:
 		for _, vv := range val {
-			r.collectLLMStrings(vv, skipLLM, seen)
+			r.collectLLMStringsAt(vv, skipLLM, seen, parent, edge)
 		}
 	}
 }
 
 func (r *Redactor) walk(ctx context.Context, v any, categories *[]string, skipLLM bool, changed *bool, llmResults map[[32]byte][]detectors.Match) any {
+	return r.walkAt(ctx, v, categories, skipLLM, changed, llmResults, protocolBusiness, "")
+}
+
+func (r *Redactor) walkAt(ctx context.Context, v any, categories *[]string, skipLLM bool, changed *bool, llmResults map[[32]byte][]detectors.Match, parent protocolObjectKind, edge string) any {
 	switch val := v.(type) {
 	case string:
 		redacted, cats := r.redactString(ctx, val, skipLLM, llmResults)
@@ -345,16 +383,17 @@ func (r *Redactor) walk(ctx context.Context, v any, categories *[]string, skipLL
 		}
 		return redacted
 	case map[string]any:
-		for k, vv := range val {
-			if protocolKeys[k] {
+		kind := classifyProtocolObject(val, parent, edge)
+		for key, vv := range val {
+			if opaqueProtocolField(kind, val, key, vv) || protocolRoutingField(kind, val, key) {
 				continue
 			}
-			val[k] = r.walk(ctx, vv, categories, skipLLM || llmSkipKeys[k], changed, llmResults)
+			val[key] = r.walkAt(ctx, vv, categories, skipLLM || llmSkipKeys[key], changed, llmResults, kind, key)
 		}
 		return val
 	case []any:
 		for i, vv := range val {
-			val[i] = r.walk(ctx, vv, categories, skipLLM, changed, llmResults)
+			val[i] = r.walkAt(ctx, vv, categories, skipLLM, changed, llmResults, parent, edge)
 		}
 		return val
 	default:

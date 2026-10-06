@@ -91,8 +91,8 @@ GOOS=windows GOARCH=amd64 go build -o cover.exe ./cmd/cover
 | Area | Cover functionality |
 | --- | --- |
 | Policy | Declarative rules with `allow`, `placeholder`, `pseudonymize`, `mask`, `redact`, and `block` actions |
-| Realistic replacements | Deterministic generators for IP addresses, hosts, domains, emails, usernames, passwords, UUIDs, URLs, and aliases |
-| Context-aware rules | Whole-value protection by JSON key, including short passwords such as `admin`, plus regex and built-in detector selectors |
+| Realistic replacements | Deterministic generators for IP addresses, hosts, domains, emails, usernames, passwords, UUIDs, URLs, aliases, and numeric identifiers |
+| Context-aware rules | JSON keys inside tool-result strings, HTTP headers, cookies, query parameters and form fields, plus regex and built-in detectors |
 | Stable identities | Installation-keyed HMAC pseudonyms remain consistent across requests, sessions, and restarts |
 | Mapping safety | Bounded, session-isolated, memory-only reversible mappings with TTL and capacity limits |
 | Inspection | `cover inspect` previews the protected JSON without contacting an LLM |
@@ -165,8 +165,9 @@ assignments, emails, SSNs, credit cards, phone numbers, and IBANs. A bare OpenAI
 `sk-...` value is deliberately not a dedicated built-in category. Define an
 explicit rule if your environment needs one.
 
-Rules live under `rules` in `~/.config/cover/config.yaml`. A selector can be a
-regular expression, a `builtin_*` detector, or a list of JSON object keys.
+Rules live under `rules` in `~/.config/cover/config.yaml`. Each rule uses one
+selector: `pattern`, `detector`, `keys`, `headers`, `cookies`, `query_params`,
+or `form_fields`. Do not combine selector kinds in one rule.
 
 ```yaml
 rules:
@@ -197,10 +198,11 @@ rules:
     priority: 200
 ```
 
-Key selectors protect complete string values. For example,
+Key selectors protect complete values, including short strings. For example,
 `{"password":"admin"}` is protected without treating an unrelated
-`{"username":"admin"}` as a password. Named `(?P<value>...)` groups let a
-regex replace only the captured value.
+`{"username":"admin"}` as a password. A selected array or object applies the
+policy to its scalar descendants; a higher-priority child rule can override it.
+Named `(?P<value>...)` groups let a regex replace only the captured value.
 
 | Action | What the LLM receives | Response behavior |
 | --- | --- | --- |
@@ -212,12 +214,143 @@ regex replace only the captured value.
 | `block` | Nothing; Cover rejects the complete request locally | No upstream response |
 
 Pseudonym generators: `ipv4`, `ipv6`, `hostname`, `domain`, `fqdn`, `email`,
-`username`, `password`, `secret`, `uuid`, `url`, and `alias`.
+`username`, `password`, `secret`, `uuid`, `url`, `alias`, and `number`.
 
 Rules are validated at startup. Invalid selectors, expressions, actions,
 generators, or capture groups prevent Cover from starting. Detector errors,
 mapping exhaustion, malformed JSON, compressed bodies, and explicit blocks do
 not fall back to forwarding the original request.
+
+### Structured tool results and HTTP values
+
+Key rules also inspect serialized JSON in OpenAI tool messages and Responses
+function outputs, Anthropic tool results, and MCP text/structured content.
+Supported presentations include nested JSON strings, JSON fences, explicit
+CLI result prefixes, raw HTTP transcripts, and text-rendered HTTP request/response
+objects. Business JSON does not bypass a rule merely because a field is named
+`id`, `type`, `role`, `name`, or `encrypted_content`. Actual provider routing and
+opaque protocol fields remain unchanged.
+
+Tool-definition and structured-output JSON Schemas are protocol metadata:
+property names, types, constraints, enums and examples remain unchanged.
+Do not place private values in these schema slots. This exception is scoped to
+actual protocol definitions, not ordinary business fields named `schema`,
+`tools`, `parameters` or `type`. Tool argument values are still inspected.
+
+```yaml
+rules:
+  auth_headers:
+    headers: [Authorization, X-Api-Key]
+    action: pseudonymize
+    generator: secret
+  session_cookies:
+    cookies: [session, sessionid]
+    action: pseudonymize
+    generator: alias
+  query_tokens:
+    query_params: [access_token, api_key]
+    action: pseudonymize
+    generator: secret
+  form_credentials:
+    form_fields: [password, client_secret]
+    action: pseudonymize
+    generator: password
+  numeric_identifiers:
+    keys: [customer_number]
+    action: pseudonymize
+    generator: number
+```
+
+Headers match case-insensitively. Other named selectors are case-insensitive
+unless `case_sensitive: true` is set. Header rules select the whole header
+value; cookie rules select individual values in `Cookie` and `Set-Cookie`.
+Query/form values are decoded once, transformed, and re-encoded once.
+Unchanged parameters retain their original bytes, including duplicates.
+HTTP `Content-Length` is recalculated when a body changes.
+Assignment detectors also inspect the original decoded `name=value` context;
+parsing a query or form does not remove the context required by a password
+assignment rule. Generated aliases are not scanned again within that pass.
+An explicit whole-header policy for `Cookie` or `Set-Cookie` owns that header,
+including an explicit `allow`; otherwise each original cookie value is
+inspected once.
+
+Header-only captures are supported: a request/status line and complete header
+lines can end without a blank separator or body. Their `Content-Length` and
+encoding headers describe the omitted body and are preserved. A blank separator
+marks a full message instead; body-length and encoding checks still apply.
+
+These selectors apply to HTTP text inside model-request JSON, such as captured
+tool output. They do not filter the model API connection's own headers, URL
+path, or query string, which Cover preserves for routing and authentication.
+
+Literal curl arguments are inspected too, including `--header`, `--cookie`,
+URLs, JSON/form `--data` variants and `--data-urlencode`. This also protects
+restored commands when an agent sends its execution history on the next turn.
+Changed arguments are shell-quoted; Cover does not execute shell expressions
+or read `@file` contents. Unsupported shell composition and transformations
+that depend on shell expansion fail closed.
+
+Use `number` for opaque numeric identifiers, not values the model must use in
+calculations. It emits a deterministic signed integer below JavaScript's exact
+integer limit. JSON numbers stay numbers; restoration retains the original
+integer, fraction or exponent representation. Numeric aliases also restore in
+recognized HTTP/curl values and URL path segments, but not arbitrary prose.
+Selected numbers require `allow`, `block`, or `pseudonymize` with `number`.
+Selected booleans require `allow` or `block`; null stays null.
+
+Malformed recognizable JSON with a selected key is rejected, not forwarded.
+Malformed HTTP framing, unsupported encoded/chunked wire bodies, and exhausted
+parser budgets also fail closed. Ordinary prose and source code are not treated
+as malformed JSON merely because they mention a protected key.
+
+Parsing budgets are 64 structural levels, 100,000 nodes, eight embedded parsing
+levels and 4 MiB of decoded JSON/HTML per request. Each HTML document also has
+a 4 MiB field-identity budget. HTTP transcripts are limited to 8 MiB, 64 KiB per
+line, 256 headers/cookies, 4,096 parameters and 32 messages. These limits are
+in addition to the configurable HTTP body limits.
+
+Streamed tool arguments are buffered per tool until their JSON is complete,
+then restored with the correct nested JSON, URL and shell escaping. Restored
+arguments are split at UTF-8 boundaries. Redundant argument-only events are
+removed when restoration shortens the document, rather than emitting long runs
+of empty deltas. Tool identity, mixed content and lifecycle events are retained.
+The `limits.sse_event_bytes` budget bounds queued argument events across
+interleaved tools. Incomplete arguments abort the stream. Ordinary text
+deltas and heartbeat comments continue to stream.
+
+### Deterministic HTML inspection
+
+Recognized HTML documents, fragments, HTML fences, HTTP HTML bodies and literal
+curl HTML bodies use the same configured policies. No local model, browser
+execution or additional feature flag is required.
+
+- `keys` and `form_fields` select input/button values, textarea contents, and
+  select option values/text. Candidate names come from `name`, `id`, associated
+  labels and ARIA labels. Password controls also have the candidate name
+  `password`, even when their actual name differs. Labels must match a configured
+  selector; Cover does not infer that an arbitrary label denotes private data.
+- Named attribute values use `keys` rules. Other attributes and text use the
+  configured detectors. Entity references are decoded before inspection.
+  Text is joined across inline elements within a block, with normalized
+  whitespace, so markup cannot simply split a configured text signature.
+- URL attributes apply query-parameter policies, including relative URLs.
+  `srcdoc` is inspected recursively. Typed JSON scripts use structured JSON
+  policies; ordinary scripts, styles and comments receive literal text scanning.
+- Existing rule priority and explicit `allow` decisions still apply. Numeric
+  fields can use `number` to share aliases with equivalent JSON numeric values.
+
+Unchanged HTML keeps its original bytes. Changed HTML is serialized safely:
+quotes, entity spelling, tag casing and implied structure can normalize.
+Restoration preserves decoded values, not byte-for-byte markup formatting.
+Special characters remain data rather than becoming active HTML or closing
+a JSON script. HTTP content lengths and curl quoting are updated as needed.
+
+Incomplete tags, duplicate attributes, unsafe parser recovery, unsupported
+constructs and exhausted budgets fail closed. The parser does not execute or
+deobfuscate JavaScript, inspect CSS semantics, decode arbitrary attachments,
+perform OCR, or interpret every browser accessibility-dump format. Unknown
+names, addresses and confidential prose still require rules or a local
+data-release policy; successful HTML parsing is not a privacy classification.
 
 ### Stable pseudonyms and reversible mappings
 
@@ -385,10 +518,14 @@ bypassing the proxy. Extension state is private and local at
 `~/.config/cover/harness.json`.
 
 Opt in with `/cover fallback on` to send new user turns directly if Cover is
-unavailable. The plugin shows **DIRECT — unprotected** and resumes protection
-when Cover is available at the next user turn. `/cover fallback off` restores
-fail-closed behavior. Failed requests and tool continuations are not replayed
-directly. The original provider configuration must support direct connections.
+unavailable. The compact indicator is **&#x1F512;** only when the active
+provider has a Cover route, including a fail-closed route. It is **&#x1F513;**
+when Cover is off, direct fallback is active, the active provider is unconfigured,
+or coverage is unknown. `/cover status` explains the active provider's coverage.
+Protection resumes when Cover is available at the next user turn.
+`/cover fallback off` restores fail-closed behavior for configured providers.
+Failed requests and tool continuations are not replayed directly.
+The original provider configuration must support direct connections.
 
 OMP users can add this repository as a marketplace:
 
@@ -416,6 +553,12 @@ budgets. Missing binaries, startup failures, timeouts, and detector errors fail
 closed when the detector is enabled. Returned spans must occur verbatim in the
 input before Cover accepts them.
 
+This is supplemental detection, not a release approval. By default, strings
+outside 8–2,000 bytes skip semantic inspection; long pages are not automatically
+chunked. The current semantic prompt also exempts self-labeled example data.
+Neither behavior disables deterministic field/regex policies, but enabling the
+local model alone does not make arbitrary website content safe to send.
+
 Leave this feature disabled on unsupported platforms. See the
 `detectors.llm_fallback` section in
 [`configs/config.example.yaml`](configs/config.example.yaml) for limits,
@@ -423,16 +566,19 @@ batching, concurrency, and model paths.
 
 ## Security boundary
 
-Cover protects matching string values in JSON bodies that actually pass through
-the proxy. It does not claim to discover every sensitive value.
+Cover protects values selected by enabled rules and detectors in JSON bodies
+that actually pass through the proxy. Selected numeric fields are supported;
+unknown content is not blocked merely because no rule recognizes it.
+Fail-closed parsing and detector errors do not prevent detection false negatives.
 
 Data can still leave the machine when it appears in:
 
 - a value that no enabled detector or rule recognizes;
 - a field covered by an `allow` rule;
-- HTTP headers, URL paths, or query strings;
-- image pixels, binary media, or unsupported encodings;
-- non-string JSON values;
+- the model API connection's own HTTP headers, URL paths, or query strings;
+- image pixels, encoded attachments, opaque file references, or unsupported
+  encodings inside otherwise valid JSON;
+- unselected numeric or boolean values, or JSON property names;
 - structural protocol fields such as model, role, type, IDs, and tool or
   function names;
 - opaque `encrypted_content`, which must remain unchanged for protocol safety;
@@ -459,6 +605,38 @@ per response, and 4 MiB per SSE event or queued restoration data.
 the next response bytes (default: 300000, or five minutes). Active responses
 can continue longer. A stalled buffered response returns HTTP 502; a stalled
 stream is aborted. Client cancellation also cancels the upstream request.
+
+### Website-crawling agents
+
+Cover is a model-traffic filter, not a browser, shell, or MCP network gateway.
+Tool results are inspected when a client sends them through Cover to a model.
+Remote tools and provider-side browsing can receive or retrieve private data
+before that boundary. Restored credentials can also be used in subsequent tool
+requests; Cover does not enforce destination restrictions on those requests.
+
+For privacy-sensitive crawling:
+
+- Keep automatic direct fallback off and explicitly route every model provider
+  through Cover. The status indicator is not proof that the active provider or
+  another process uses a covered route; enforce direct-egress restrictions
+  separately when bypass must be impossible.
+- Set `media.images: block` if screenshots and image references must not leave.
+  Gate other attachments separately: this setting is not a general file filter.
+- Use HTML inspection for supported page markup and configured field/text
+  policies. Extract other page/document formats locally into a known schema;
+  Cover does not decode every representation or infer every private field.
+- Define site-specific rules for private fields and identifiers. Generic
+  signatures do not establish that names, addresses, records, financial values,
+  or confidential prose have been removed.
+- Use local tools and separate destination/credential controls. Disable remote
+  or provider-side tools that would disclose private data outside this boundary.
+- If private data must never reach an external model, keep unknown content local
+  and release only explicitly approved fields. A fully local model is the safer
+  option when the task requires the original private content.
+
+`cover inspect` can reveal gaps without forwarding the request. Its output can
+still contain undetected private data; do not publish it or include it in agent
+context without review. Zero matches is not a statement that content is public.
 
 Read [`SECURITY.md`](SECURITY.md) before reporting a vulnerability. Please use
 the private reporting route described there rather than opening a public issue.

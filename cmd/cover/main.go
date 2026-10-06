@@ -808,7 +808,7 @@ func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
 }
 
 func makeFieldRule(rule detectors.CustomPattern) (redact.FieldRule, bool) {
-	if len(rule.Keys) == 0 || (rule.Enabled != nil && !*rule.Enabled) {
+	if len(rule.Keys)+len(rule.Headers)+len(rule.Cookies)+len(rule.QueryParams)+len(rule.FormFields) == 0 || (rule.Enabled != nil && !*rule.Enabled) {
 		return redact.FieldRule{}, false
 	}
 	action := rule.Action
@@ -826,6 +826,10 @@ func makeFieldRule(rule detectors.CustomPattern) (redact.FieldRule, bool) {
 	return redact.FieldRule{
 		Name:          rule.Name,
 		Keys:          append([]string(nil), rule.Keys...),
+		Headers:       append([]string(nil), rule.Headers...),
+		Cookies:       append([]string(nil), rule.Cookies...),
+		QueryParams:   append([]string(nil), rule.QueryParams...),
+		FormFields:    append([]string(nil), rule.FormFields...),
 		Category:      category,
 		Action:        action,
 		Generator:     rule.Generator,

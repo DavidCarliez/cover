@@ -4,6 +4,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -26,6 +27,7 @@ var validGenerators = map[string]bool{
 	"ipv4": true, "ipv6": true, "hostname": true, "domain": true,
 	"fqdn": true, "email": true, "username": true, "password": true,
 	"secret": true, "uuid": true, "url": true, "alias": true,
+	"number": true,
 }
 
 func ValidateAction(action, generator string) error {
@@ -55,6 +57,9 @@ func keyedDigest(key []byte, domain, original string, attempt int) [32]byte {
 }
 
 func generateReplacement(key []byte, generator, original string, attempt int) (string, error) {
+	if generator == "number" {
+		return generateNumberReplacement(key, original, attempt)
+	}
 	h := keyedDigest(key, "pseudonym:"+generator, original, attempt)
 	switch generator {
 	case "ipv4":
@@ -144,6 +149,32 @@ func generateReplacement(key []byte, generator, original string, attempt int) (s
 	default:
 		return "", fmt.Errorf("unknown pseudonym generator")
 	}
+}
+
+func generateNumberReplacement(key []byte, original string, attempt int) (string, error) {
+	if original == "" || !json.Valid([]byte(original)) {
+		return "", fmt.Errorf("invalid JSON number")
+	}
+	first := 0
+	if original[0] == '-' {
+		first = 1
+	}
+	if first >= len(original) || original[first] < '0' || original[first] > '9' {
+		return "", fmt.Errorf("invalid JSON number")
+	}
+
+	// Use a canonical integer that is exactly representable by IEEE-754
+	// binary64. A parser may therefore re-serialize a fake originating from a
+	// fraction or exponent without changing the reverse-mapping key.
+	h := keyedDigest(key, "pseudonym:number", original, attempt)
+	raw := uint64(h[0])<<40 | uint64(h[1])<<32 | uint64(h[2])<<24 |
+		uint64(h[3])<<16 | uint64(h[4])<<8 | uint64(h[5])
+	const span = uint64(8_000_000_000_000)
+	replacement := strconv.FormatUint(1_000_000_000_000+raw%span, 10)
+	if original[0] == '-' {
+		replacement = "-" + replacement
+	}
+	return replacement, nil
 }
 
 func maskValue(value string) string {

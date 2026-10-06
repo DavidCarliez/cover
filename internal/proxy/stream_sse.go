@@ -28,23 +28,24 @@ type SSERestoringWriter struct {
 	pending     map[string]*sseFragmentEvent
 	queue       []*sseFragmentEvent
 	queuedBytes int64
-	jsonStates  map[string]*redact.JSONStreamState
+	arguments   map[string]*sseArgumentBuffer
 	maxEvent    int64
 }
 
 // A channel retains its last delta until the next fragment or its end event.
 // The bounded queue preserves provider event order across interleaved channels.
 type sseFragmentEvent struct {
-	event         []byte
-	payloadStart  int
-	payloadEnd    int
-	payload       any
-	channel       string
-	text          string
-	setText       func(string)
-	ready         bool
-	output        []byte
-	jsonArguments bool
+	event              []byte
+	payloadStart       int
+	payloadEnd         int
+	payload            any
+	channel            string
+	text               string
+	setText            func(string)
+	ready              bool
+	output             []byte
+	argumentFields     []sseFragment
+	remainingArguments int
 }
 
 // NewSSERestoringWriter wraps w for text/event-stream responses.
@@ -62,7 +63,7 @@ func NewSSERestoringWriterForSessionWithLimit(w io.Writer, redactor *redact.Reda
 		maxEvent = defaultSSEEventLimit
 	}
 	return &SSERestoringWriter{w: w, flusher: f, redactor: redactor, session: session, maxEvent: maxEvent,
-		pending: make(map[string]*sseFragmentEvent), jsonStates: make(map[string]*redact.JSONStreamState)}
+		pending: make(map[string]*sseFragmentEvent), arguments: make(map[string]*sseArgumentBuffer)}
 }
 
 // Write implements io.Writer.
@@ -96,15 +97,14 @@ func (rw *SSERestoringWriter) Close() error {
 		rw.buf = nil
 		return ErrSSEEventTooLarge
 	}
-	if err := rw.flushPending(); err != nil {
-		return err
-	}
 	if len(rw.buf) > 0 {
-		restored := rw.redactor.RestoreSSEEventForSession(rw.buf, rw.session)
-		if err := rw.emit(restored); err != nil {
+		if err := rw.writeEvent(rw.buf); err != nil {
 			return err
 		}
 		rw.buf = nil
+	}
+	if err := rw.flushPending(); err != nil {
+		return err
 	}
 	if rw.flusher != nil {
 		rw.flusher.Flush()
@@ -133,10 +133,13 @@ func (rw *SSERestoringWriter) writeEvent(event []byte) error {
 		rw.queuedBytes += int64(len(event))
 		return rw.drain()
 	}
+	if len(fragment.argumentFields) > 0 {
+		return rw.queueArguments(fragment)
+	}
 	if previous := rw.pending[fragment.channel]; previous != nil {
 		combined := previous.text + fragment.text
 		cut := rw.redactor.SafeStreamCut([]byte(combined), rw.session)
-		previous.output = previous.render(rw.restoreFragment(previous, []byte(combined[:cut])), rw.redactor, rw.session)
+		previous.output = previous.render(rw.redactor.RestoreForSession([]byte(combined[:cut]), rw.session), rw.redactor, rw.session)
 		previous.ready = true
 		fragment.text = combined[cut:]
 	}
@@ -148,9 +151,14 @@ func (rw *SSERestoringWriter) writeEvent(event []byte) error {
 
 func (rw *SSERestoringWriter) flushPending() error {
 	for channel, pending := range rw.pending {
-		pending.output = pending.render(rw.restoreFragment(pending, []byte(pending.text)), rw.redactor, rw.session)
+		pending.output = pending.render(rw.redactor.RestoreForSession([]byte(pending.text), rw.session), rw.redactor, rw.session)
 		pending.ready = true
 		delete(rw.pending, channel)
+	}
+	for channel := range rw.arguments {
+		if err := rw.finishArguments(channel); err != nil {
+			return err
+		}
 	}
 	return rw.drain()
 }
@@ -175,11 +183,7 @@ func (rw *SSERestoringWriter) finishChannels(event []byte) error {
 		}
 		if typ == "content_block_stop" {
 			prefix := "anthropic:" + jsonIdentity(payload["index"]) + ":"
-			for channel := range rw.pending {
-				if strings.HasPrefix(channel, prefix) {
-					channels = append(channels, channel)
-				}
-			}
+			channels = append(channels, rw.channelsWithPrefix(prefix)...)
 		}
 		if choices, ok := payload["choices"].([]any); ok {
 			for position, raw := range choices {
@@ -191,19 +195,17 @@ func (rw *SSERestoringWriter) finishChannels(event []byte) error {
 				if id == "" {
 					id = strconv.Itoa(position)
 				}
-				for channel := range rw.pending {
-					if strings.HasPrefix(channel, "chat:"+id+":") {
-						channels = append(channels, channel)
-					}
-				}
+				channels = append(channels, rw.channelsWithPrefix("chat:"+id+":")...)
 			}
 		}
 		for _, channel := range channels {
 			if pending := rw.pending[channel]; pending != nil {
-				pending.output = pending.render(rw.restoreFragment(pending, []byte(pending.text)), rw.redactor, rw.session)
+				pending.output = pending.render(rw.redactor.RestoreForSession([]byte(pending.text), rw.session), rw.redactor, rw.session)
 				pending.ready = true
 				delete(rw.pending, channel)
-				delete(rw.jsonStates, channel)
+			}
+			if err := rw.finishArguments(channel); err != nil {
+				return err
 			}
 		}
 	}
@@ -219,29 +221,19 @@ func heartbeatSSEEvent(event []byte) bool {
 	return true
 }
 
-func (rw *SSERestoringWriter) restoreFragment(event *sseFragmentEvent, text []byte) []byte {
-	if !event.jsonArguments {
-		return rw.redactor.RestoreForSession(text, rw.session)
-	}
-	state := rw.jsonStates[event.channel]
-	if state == nil {
-		state = &redact.JSONStreamState{}
-		rw.jsonStates[event.channel] = state
-	}
-	return rw.redactor.RestoreJSONFragment(text, rw.session, state)
-}
-
 func (rw *SSERestoringWriter) drain() error {
 	for len(rw.queue) > 0 && rw.queue[0].ready {
 		event := rw.queue[0]
-		if err := rw.emit(event.output); err != nil {
-			return err
+		if len(event.output) > 0 {
+			if err := rw.emit(event.output); err != nil {
+				return err
+			}
 		}
 		rw.queuedBytes -= int64(len(event.event))
 		rw.queue[0] = nil
 		rw.queue = rw.queue[1:]
 	}
-	if rw.queuedBytes > rw.maxEvent || len(rw.pending) > 128 {
+	if rw.queuedBytes > rw.maxEvent || len(rw.pending)+len(rw.arguments) > 128 {
 		return ErrSSEEventTooLarge
 	}
 	return nil
@@ -296,14 +288,10 @@ func (event *sseFragmentEvent) render(text []byte, redactor *redact.Redactor, se
 			}
 		}
 	}
-	payload, err := json.Marshal(event.payload)
+	rendered, err := event.marshalPayload()
 	if err != nil {
 		return redactor.RestoreSSEEventForSession(event.event, session)
 	}
-	rendered := make([]byte, 0, len(event.event)-event.payloadEnd+event.payloadStart+len(payload))
-	rendered = append(rendered, event.event[:event.payloadStart]...)
-	rendered = append(rendered, payload...)
-	rendered = append(rendered, event.event[event.payloadEnd:]...)
 	return rendered
 }
 
@@ -361,15 +349,21 @@ func parseSSEFragmentEvent(event []byte) (*sseFragmentEvent, bool) {
 	}
 
 	candidates := findSSEFragments(payload)
+	fragment := &sseFragmentEvent{event: event, payloadStart: payloadStart, payloadEnd: payloadEnd, payload: payload}
+	for _, candidate := range candidates {
+		if isJSONArgumentChannel(candidate.channel) {
+			fragment.argumentFields = append(fragment.argumentFields, candidate)
+		}
+	}
+	if len(fragment.argumentFields) > 0 {
+		return fragment, true
+	}
 	if len(candidates) != 1 {
 		return nil, false
 	}
 	candidate := candidates[0]
-	return &sseFragmentEvent{
-		event: event, payloadStart: payloadStart, payloadEnd: payloadEnd, payload: payload,
-		channel: candidate.channel, text: candidate.text, setText: candidate.setText,
-		jsonArguments: strings.Contains(candidate.channel, "function_call_arguments") || strings.HasSuffix(candidate.channel, ":partial_json") || strings.Contains(candidate.channel, ":tool:"),
-	}, true
+	fragment.channel, fragment.text, fragment.setText = candidate.channel, candidate.text, candidate.setText
+	return fragment, true
 }
 
 func skipSSELineEnding(event []byte, at int) int {

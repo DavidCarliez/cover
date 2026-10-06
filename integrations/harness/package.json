@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "test": "node --test",
-    "test:e2e": "COVER_HARNESS_E2E=1 node --test test/e2e.test.js",
+    "test:e2e": "COVER_HARNESS_E2E=1 node --test test/e2e.test.js test/tool-results.e2e.test.js",
     "check": "node --check index.js && node --check lib/cover.js"
   },
   "keywords": [

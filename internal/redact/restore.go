@@ -35,117 +35,282 @@ func (r *Redactor) restoreJSONOrRaw(body []byte, session string) []byte {
 
 func (r *Redactor) restoreJSONOrRawWithSnapshot(body []byte, snapshot *restorationSnapshot) []byte {
 	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 || (trimmed[0] != '{' && trimmed[0] != '[' && trimmed[0] != '"') {
-		restored, _ := snapshot.restoreBytes(body)
-		return restored
-	}
-
-	dec := json.NewDecoder(bytes.NewReader(trimmed))
-	dec.UseNumber()
-	var data any
-	if err := dec.Decode(&data); err != nil {
-		restored, _ := snapshot.restoreBytes(body)
-		return restored
-	}
-	var trailing any
-	if err := dec.Decode(&trailing); err != io.EOF {
-		restored, _ := snapshot.restoreBytes(body)
-		return restored
-	}
-
-	walked, changed := r.walkRestoreStrings(data, snapshot)
-	if !changed {
+	if len(trimmed) == 0 {
 		return body
 	}
-	out, err := json.Marshal(walked)
-	if err != nil {
-		restored, _ := snapshot.restoreBytes(body)
-		return restored
+	first := trimmed[0]
+	if first == '{' || first == '[' || first == '"' || first == '-' || first >= '0' && first <= '9' {
+		decoder := json.NewDecoder(bytes.NewReader(trimmed))
+		decoder.UseNumber()
+		var value, trailing any
+		if decoder.Decode(&value) == nil && decoder.Decode(&trailing) == io.EOF {
+			nodes := 0
+			walked, changed, safe := r.walkRestoreValues(value, snapshot, protocolBusiness, "", 0, &nodes)
+			if !safe || !changed {
+				return body
+			}
+			if output, err := json.Marshal(walked); err == nil {
+				return output
+			}
+			return body
+		}
 	}
-	return out
+	nodes := 0
+	text := string(body)
+	if restored, handled, changed, safe := r.restoreContentString(text, snapshot, 0, &nodes); handled {
+		if !safe || !changed {
+			return body
+		}
+		return []byte(restored)
+	}
+	if restored, handled, changed := r.restoreEmbeddedString(text, snapshot, 0, &nodes); handled {
+		if !changed {
+			return body
+		}
+		return []byte(restored)
+	}
+	restored, _ := snapshot.restoreBytes(body)
+	return restored
 }
 
-func (r *Redactor) walkRestoreStrings(v any, snapshot *restorationSnapshot) (any, bool) {
+func (r *Redactor) walkRestoreValues(v any, snapshot *restorationSnapshot, parent protocolObjectKind, edge string, depth int, nodes *int) (any, bool, bool) {
+	if depth > maxPolicyDepth || *nodes >= maxPolicyNodes {
+		return v, false, false
+	}
+	*nodes++
 	switch val := v.(type) {
 	case string:
-		if isImageDataURL(val) {
-			return val, false
+		if restored, handled, changed, safe := r.restoreContentString(val, snapshot, depth+1, nodes); handled {
+			return restored, changed, safe
+		}
+		if restored, handled, changed := r.restoreEmbeddedString(val, snapshot, depth+1, nodes); handled {
+			return restored, changed, true
 		}
 		restored, changed := snapshot.restoreString(val)
-		return restored, changed
+		return restored, changed, true
+	case json.Number:
+		restored, changed := snapshot.restoreNumber(val.String())
+		if !changed {
+			return val, false, true
+		}
+		return json.Number(restored), true, true
 	case map[string]any:
+		kind := classifyProtocolObject(val, parent, edge)
 		changed := false
-		for k, vv := range val {
-			if immutableProtocolField(k) || opaqueImageProtocolField(val, k, vv) {
+		for key, vv := range val {
+			if protocolSchemaField(kind, val, key) {
+				budget := transformBudget{nodes: *nodes}
+				if err := validateProtocolSchema(vv, &budget, depth+1); err != nil {
+					return v, false, false
+				}
+				*nodes = budget.nodes
 				continue
 			}
-			if text, ok := vv.(string); ok && k == "arguments" && json.Valid([]byte(text)) {
-				restored := r.restoreJSONOrRawWithSnapshot([]byte(text), snapshot)
-				val[k] = string(restored)
-				changed = changed || string(restored) != text
+			if opaqueProtocolField(kind, val, key, vv) || protocolRoutingField(kind, val, key) {
 				continue
 			}
-			restored, fieldChanged := r.walkRestoreStrings(vv, snapshot)
-			val[k] = restored
+			childParent := kind
+			if _, matched := r.fieldRule(selectorKeys, key); matched {
+				childParent = protocolStructuredBusiness
+			}
+			restored, fieldChanged, safe := r.walkRestoreValues(vv, snapshot, childParent, key, depth+1, nodes)
+			if !safe {
+				return v, false, false
+			}
+			val[key] = restored
 			changed = changed || fieldChanged
 		}
-		return val, changed
+		return val, changed, true
 	case []any:
 		changed := false
 		for i, vv := range val {
-			restored, itemChanged := r.walkRestoreStrings(vv, snapshot)
+			restored, itemChanged, safe := r.walkRestoreValues(vv, snapshot, parent, edge, depth+1, nodes)
+			if !safe {
+				return v, false, false
+			}
 			val[i] = restored
 			changed = changed || itemChanged
 		}
-		return val, changed
+		return val, changed, true
 	default:
-		return v, false
+		return v, false, true
 	}
 }
 
-// JSONStreamState tracks the lexical context of streamed tool arguments.
-// Callers retain incomplete replacement tokens before passing fragments here.
-type JSONStreamState struct {
-	InString bool
-	Escaped  bool
-}
-
-func (r *Redactor) RestoreJSONFragment(data []byte, session string, state *JSONStreamState) []byte {
-	snapshot := r.store.restorationSnapshot(session)
-	if snapshot == nil {
-		return data
-	}
-	replacer := snapshot.jsonReplacer
-	var out strings.Builder
-	start := 0
-	for i, b := range data {
-		if state.InString {
-			if state.Escaped {
-				state.Escaped = false
-				continue
-			}
-			if b == '\\' {
-				state.Escaped = true
-				continue
-			}
-			if b == '"' {
-				out.WriteString(replacer.Replace(string(data[start:i])))
-				out.WriteByte(b)
-				start = i + 1
-				state.InString = false
-			}
-		} else if b == '"' {
-			out.Write(data[start : i+1])
-			start = i + 1
-			state.InString = true
+// Whole HTML owns its markup. Otherwise HTTP framing owns the surrounding
+// headers, including when its body contains an HTML fence.
+func (r *Redactor) restoreContentString(text string, snapshot *restorationSnapshot, depth int, nodes *int) (string, bool, bool, bool) {
+	if looksLikeHTMLContent(text) {
+		if restored, handled, changed, safe := r.restoreHTMLString(text, snapshot, depth, nodes, false); handled {
+			return restored, handled, changed, safe
 		}
 	}
-	if state.InString {
-		out.WriteString(replacer.Replace(string(data[start:])))
-	} else {
-		out.Write(data[start:])
+	if restored, handled, changed, safe := r.restoreHTTPString(text, snapshot, depth, nodes); handled {
+		return restored, handled, changed, safe
 	}
-	return []byte(out.String())
+	return r.restoreHTMLString(text, snapshot, depth, nodes, false)
+}
+
+func (r *Redactor) restoreHTTPString(text string, snapshot *restorationSnapshot, depth int, nodes *int) (string, bool, bool, bool) {
+	if depth > maxPolicyDepth {
+		return text, true, false, false
+	}
+	output, handled, err := protectHTTPContent(text, httpContentPolicy{
+		Transform: func(_, _ string, value string) (string, error) {
+			if restored, ok := snapshot.restoreNumber(value); ok {
+				return restored, nil
+			}
+			if restored, handled, _, safe := r.restoreContentString(value, snapshot, depth+1, nodes); handled {
+				if !safe {
+					return "", ErrUnsafeRequest
+				}
+				return restored, nil
+			}
+			if restored, embedded, changed := r.restoreEmbeddedString(value, snapshot, depth+1, nodes); embedded {
+				if changed {
+					return restored, nil
+				}
+				return value, nil
+			}
+			restored, _ := snapshot.restoreString(value)
+			return restored, nil
+		},
+		JSON: func(value string) (string, error) {
+			restored, _, safe := r.restoreJSONDocument(value, snapshot, depth+1, nodes)
+			if !safe {
+				return "", ErrUnsafeRequest
+			}
+			return restored, nil
+		},
+		HTML: func(value string) (string, error) {
+			restored, _, _, safe := r.restoreHTMLString(value, snapshot, depth+1, nodes, true)
+			if !safe {
+				return "", ErrUnsafeRequest
+			}
+			return restored, nil
+		},
+		Text: func(value string) (string, error) {
+			if restored, handled, _, safe := r.restoreHTMLString(value, snapshot, depth+1, nodes, false); handled {
+				if !safe {
+					return "", ErrUnsafeRequest
+				}
+				return restored, nil
+			}
+			return snapshot.restoreHTTPText(value), nil
+		},
+		HasHeaders: true,
+		HasCookies: true,
+		HasQuery:   true,
+		HasForm:    true,
+		HasJSON:    true,
+	})
+	if err != nil {
+		return text, true, false, false
+	}
+	if !handled {
+		return text, false, false, true
+	}
+	return output, true, output != text, true
+}
+
+func (snapshot *restorationSnapshot) restoreHTTPText(value string) string {
+	if restored, changed := snapshot.restoreString(value); changed {
+		return restored
+	}
+	if restored, ok := snapshot.restoreNumber(value); ok {
+		return restored
+	}
+	if !strings.HasPrefix(value, "/") && !strings.HasPrefix(value, "http://") && !strings.HasPrefix(value, "https://") {
+		return value
+	}
+	var output strings.Builder
+	last := 0
+	for start := 0; start < len(value); {
+		end := strings.IndexByte(value[start:], '/')
+		if end < 0 {
+			end = len(value)
+		} else {
+			end += start
+		}
+		if restored, ok := snapshot.restoreNumber(value[start:end]); ok {
+			if output.Len() == 0 {
+				output.Grow(len(value))
+			}
+			output.WriteString(value[last:start])
+			output.WriteString(restored)
+			last = end
+		}
+		start = end + 1
+	}
+	if last == 0 {
+		return value
+	}
+	output.WriteString(value[last:])
+	return output.String()
+}
+
+func (r *Redactor) restoreJSONDocument(text string, snapshot *restorationSnapshot, depth int, nodes *int) (string, bool, bool) {
+	value, ok := decodeJSONDocument(text)
+	if !ok {
+		return text, false, false
+	}
+	walked, changed, safe := r.walkRestoreValues(value, snapshot, protocolStructuredBusiness, "", depth+1, nodes)
+	if !safe || !changed {
+		return text, false, safe
+	}
+	encoded, err := marshalEmbeddedValue(walked)
+	if err != nil {
+		return text, false, false
+	}
+	return encoded, true, true
+}
+
+func (r *Redactor) restoreEmbeddedString(text string, snapshot *restorationSnapshot, depth int, nodes *int) (string, bool, bool) {
+	if depth > maxPolicyDepth {
+		_, status := locateEmbeddedJSON(text)
+		return text, status != embeddedJSONNone, false
+	}
+	candidate, status := locateEmbeddedJSON(text)
+	if status != embeddedJSONParsed {
+		return text, false, false
+	}
+
+	var walked any
+	var changed, safe bool
+	if nested, ok := candidate.value.(string); ok {
+		var handled bool
+		var restored string
+		restored, handled, changed = r.restoreEmbeddedString(nested, snapshot, depth+1, nodes)
+		if !handled {
+			restored, changed = snapshot.restoreString(nested)
+		}
+		walked, safe = restored, true
+	} else {
+		walked, changed, safe = r.walkRestoreValues(candidate.value, snapshot, protocolStructuredBusiness, "", depth+1, nodes)
+	}
+	if !safe {
+		return text, true, false
+	}
+	prefix, prefixChanged := r.restoreEmbeddedFrame(text[:candidate.start], snapshot, depth+1, nodes)
+	suffix, suffixChanged := r.restoreEmbeddedFrame(text[candidate.end:], snapshot, depth+1, nodes)
+	if !changed && !prefixChanged && !suffixChanged {
+		return text, true, false
+	}
+	encoded, err := marshalEmbeddedCandidate(candidate, walked)
+	if err != nil {
+		return text, true, false
+	}
+	if !changed {
+		encoded = text[candidate.start:candidate.end]
+	}
+	return prefix + encoded + suffix, true, true
+}
+
+func (r *Redactor) restoreEmbeddedFrame(text string, snapshot *restorationSnapshot, depth int, nodes *int) (string, bool) {
+	if restored, handled, changed := r.restoreEmbeddedString(text, snapshot, depth, nodes); handled {
+		return restored, changed
+	}
+	return snapshot.restoreString(text)
 }
 
 // RestoreSSEEvent restores placeholders inside a single SSE event block.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/DavidCarliez/cover/internal/redact/detectors"
@@ -45,12 +46,17 @@ type TransformResult struct {
 	Captures    []CaptureReport `json:"-"`
 }
 
-// FieldRule applies a policy to an entire JSON string value when its object
-// key matches one of Keys. Key matching is case-insensitive unless
-// CaseSensitive is true.
+// FieldRule applies a policy to one selector kind. Keys select JSON object
+// fields and HTML attributes/form identities. FormFields also selects HTML
+// form identities. HTTP selectors apply to captured content, not API transport
+// headers. Header names always match case-insensitively.
 type FieldRule struct {
 	Name          string
 	Keys          []string
+	Headers       []string
+	Cookies       []string
+	QueryParams   []string
+	FormFields    []string
 	Category      string
 	Action        string
 	Generator     string
@@ -81,6 +87,9 @@ func (r *Redactor) TransformWithCaptures(body []byte, session string, injectNote
 
 func (r *Redactor) transform(body []byte, session string, injectNote bool, mediaPolicy string, capture bool) (TransformResult, error) {
 	var result TransformResult
+	if !r.fieldRulesValid {
+		return result, fmt.Errorf("%w: invalid field selector policy", ErrUnsafeRequest)
+	}
 	if len(bytes.TrimSpace(body)) == 0 {
 		result.Body = body
 		return result, nil
@@ -113,9 +122,13 @@ func (r *Redactor) transform(body []byte, session string, injectNote bool, media
 			return result, fmt.Errorf("%w: invalid media policy", ErrUnsafeRequest)
 		}
 	}
+	if len(r.detectors) == 0 && len(r.fieldRules) == 0 {
+		result.Body = body
+		return result, nil
+	}
 
 	occupied := map[string]struct{}{}
-	collectStrings(data, occupied)
+	r.collectOccupied(data, protocolBusiness, "", occupied)
 	ctx := context.Background()
 	var cancel context.CancelFunc
 	if r.llmBudget > 0 {
@@ -123,9 +136,10 @@ func (r *Redactor) transform(body []byte, session string, injectNote bool, media
 		defer cancel()
 	}
 	changed := false
-	walked, err := r.walkPolicy(ctx, data, session, nil, occupied, &result, &changed, capture)
+	budget := &transformBudget{}
+	walked, err := r.walkPolicy(ctx, data, session, occupied, &result, &changed, capture, budget, 0, 0, nil, protocolBusiness, "")
 	if err != nil {
-		return TransformResult{}, err
+		return TransformResult{}, genericUnsafeError(err)
 	}
 	if injectNote && result.Transformed > 0 {
 		if root, ok := walked.(map[string]any); ok {
@@ -144,96 +158,184 @@ func (r *Redactor) transform(body []byte, session string, injectNote bool, media
 	return result, nil
 }
 
-func collectStrings(v any, out map[string]struct{}) {
+func genericUnsafeError(err error) error {
+	if errors.Is(err, ErrMalformedJSON) {
+		return ErrMalformedJSON
+	}
+	if errors.Is(err, ErrUnsafeRequest) {
+		return fmt.Errorf("%w: content inspection failed", ErrUnsafeRequest)
+	}
+	return fmt.Errorf("%w: content inspection failed", ErrUnsafeRequest)
+}
+
+func (r *Redactor) collectOccupied(v any, parent protocolObjectKind, edge string, out map[string]struct{}) {
+	r.collectOccupiedValue(v, parent, edge, out, 0, 0, false)
+}
+
+func (r *Redactor) collectOccupiedValue(v any, parent protocolObjectKind, edge string, out map[string]struct{}, depth, embeddedDepth int, forceBusiness bool) {
+	if depth > maxPolicyDepth {
+		return
+	}
 	switch val := v.(type) {
 	case string:
-		if isImageDataURL(val) {
-			return
-		}
 		out[val] = struct{}{}
+		r.collectDecodedOccupied(val, out, depth, embeddedDepth, forceBusiness)
+	case json.Number:
+		out[val.String()] = struct{}{}
 	case map[string]any:
+		kind := classifyProtocolObject(val, parent, edge)
+		if forceBusiness {
+			kind = protocolStructuredBusiness
+		}
 		for key, vv := range val {
-			if opaqueImageProtocolField(val, key, vv) {
+			if protocolSchemaField(kind, val, key) {
+				collectProtocolSchemaOccupied(vv, out, depth+1)
 				continue
 			}
-			collectStrings(vv, out)
+			if opaqueProtocolField(kind, val, key, vv) || protocolRoutingField(kind, val, key) {
+				continue
+			}
+			childForce := forceBusiness
+			if _, matched := r.fieldRule(selectorKeys, key); matched {
+				childForce = true
+			}
+			r.collectOccupiedValue(vv, kind, key, out, depth+1, embeddedDepth, childForce)
 		}
 	case []any:
 		for _, vv := range val {
-			collectStrings(vv, out)
+			r.collectOccupiedValue(vv, parent, edge, out, depth+1, embeddedDepth, forceBusiness)
 		}
 	}
 }
 
-// Only structural routing identifiers are excluded. Text-bearing protocol
-// fields (instructions, system, arguments, results, content, output, metadata)
-// are deliberately scanned.
-func excludedProtocolField(object map[string]any, path []string, key string) bool {
-	if immutableProtocolField(key) {
-		return true
+func (r *Redactor) collectDecodedOccupied(text string, out map[string]struct{}, depth, embeddedDepth int, forceBusiness bool) {
+	if depth > maxPolicyDepth || embeddedDepth > maxEmbeddedJSONDepth || len(text) > maxEmbeddedJSONBytes {
+		return
 	}
-	switch key {
-	case "model", "role", "type", "id", "tool_use_id", "call_id", "item_id", "stop_reason", "stop_sequence":
-		return true
-	case "name":
-		if typ, _ := object["type"].(string); strings.Contains(typ, "tool") || strings.Contains(typ, "function") {
-			return true
-		}
-		if role, _ := object["role"].(string); role == "tool" {
-			return true
-		}
-		for _, part := range path {
-			if part == "tools" || part == "tool_calls" || part == "function" || part == "custom" {
-				return true
+	if looksLikeHTMLContent(text) && r.collectHTMLOccupied(text, out, depth, embeddedDepth, false) {
+		return
+	}
+	_, handled, err := protectHTTPContent(text, httpContentPolicy{
+		Transform: func(selector, name, value string) (string, error) {
+			out[value] = struct{}{}
+			selected := forceBusiness
+			if _, matched := r.fieldRule(selector, name); matched {
+				selected = true
 			}
-		}
-		return false
-	default:
-		return false
+			r.collectDecodedOccupied(value, out, depth+1, embeddedDepth+1, selected)
+			return value, nil
+		},
+		JSON: func(value string) (string, error) {
+			if decoded, ok := decodeJSONDocument(value); ok {
+				r.collectOccupiedValue(decoded, protocolStructuredBusiness, "", out, depth+1, embeddedDepth+1, true)
+			}
+			return value, nil
+		},
+		HTML: func(value string) (string, error) {
+			r.collectHTMLOccupied(value, out, depth+1, embeddedDepth+1, true)
+			return value, nil
+		},
+		Text: func(value string) (string, error) {
+			if r.collectHTMLOccupied(value, out, depth+1, embeddedDepth+1, false) {
+				return value, nil
+			}
+			out[value] = struct{}{}
+			return value, nil
+		},
+		HasHeaders: true,
+		HasCookies: true,
+		HasQuery:   true,
+		HasForm:    true,
+		HasJSON:    true,
+	})
+	if handled || err != nil {
+		return
+	}
+	if r.collectHTMLOccupied(text, out, depth, embeddedDepth, false) {
+		return
+	}
+	candidate, status := locateEmbeddedJSON(text)
+	if status == embeddedJSONParsed {
+		r.collectOccupiedValue(candidate.value, protocolStructuredBusiness, "", out, depth+1, embeddedDepth+1, true)
+		r.collectDecodedOccupied(text[:candidate.start], out, depth+1, embeddedDepth+1, forceBusiness)
+		r.collectDecodedOccupied(text[candidate.end:], out, depth+1, embeddedDepth+1, forceBusiness)
 	}
 }
 
-// Opaque cryptographic protocol values must pass through unchanged. Scanning
-// or restoring a coincidental detector/placeholder match corrupts the value.
-func immutableProtocolField(key string) bool {
-	return key == "encrypted_content"
-}
-
-func (r *Redactor) walkPolicy(ctx context.Context, v any, session string, path []string, occupied map[string]struct{}, result *TransformResult, changed *bool, capture bool) (any, error) {
+func (r *Redactor) walkPolicy(
+	ctx context.Context,
+	v any,
+	session string,
+	occupied map[string]struct{},
+	result *TransformResult,
+	changed *bool,
+	capture bool,
+	budget *transformBudget,
+	depth int,
+	embeddedDepth int,
+	inherited *FieldRule,
+	parent protocolObjectKind,
+	edge string,
+) (any, error) {
+	if err := budget.visit(depth); err != nil {
+		return nil, err
+	}
 	switch val := v.(type) {
 	case string:
-		if isImageDataURL(val) {
+		if inherited != nil {
+			return r.transformFieldString(val, session, occupied, result, changed, *inherited, capture)
+		}
+		return r.transformUnselectedContent(ctx, val, session, occupied, result, changed, capture, budget, depth, embeddedDepth)
+	case json.Number:
+		if inherited == nil {
 			return val, nil
 		}
-		return r.transformString(ctx, val, session, occupied, result, changed, capture)
+		return r.transformFieldNumber(val, session, occupied, result, changed, *inherited, capture)
+	case bool:
+		if inherited == nil {
+			return val, nil
+		}
+		return r.transformFieldBool(val, result, *inherited, capture)
+	case nil:
+		// JSON null carries no secret value and remains null under every field
+		// policy, preserving the schema and avoiding a false transformation.
+		return nil, nil
 	case map[string]any:
-		for k, vv := range val {
-			if opaqueImageProtocolField(val, k, vv) {
-				continue
-			}
-			if excludedProtocolField(val, path, k) {
-				continue
-			}
-			if text, ok := vv.(string); ok {
-				if rule, matched := r.fieldRule(k); matched {
-					nv, err := r.transformFieldString(text, session, occupied, result, changed, rule, capture)
-					if err != nil {
-						return nil, err
-					}
-					val[k] = nv
-					continue
+		kind := classifyProtocolObject(val, parent, edge)
+		if inherited != nil {
+			kind = protocolStructuredBusiness
+		}
+		keys := make([]string, 0, len(val))
+		for key := range val {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			vv := val[key]
+			if protocolSchemaField(kind, val, key) {
+				if err := validateProtocolSchema(vv, budget, depth+1); err != nil {
+					return nil, err
 				}
+				continue
 			}
-			nv, err := r.walkPolicy(ctx, vv, session, append(path, k), occupied, result, changed, capture)
+			if opaqueProtocolField(kind, val, key, vv) || protocolRoutingField(kind, val, key) {
+				continue
+			}
+			selected := inherited
+			if direct, matched := r.fieldRule(selectorKeys, key); matched && (selected == nil || fieldRuleBefore(direct, *selected)) {
+				directCopy := direct
+				selected = &directCopy
+			}
+			nv, err := r.walkPolicy(ctx, vv, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth, selected, kind, key)
 			if err != nil {
 				return nil, err
 			}
-			val[k] = nv
+			val[key] = nv
 		}
 		return val, nil
 	case []any:
 		for i, vv := range val {
-			nv, err := r.walkPolicy(ctx, vv, session, path, occupied, result, changed, capture)
+			nv, err := r.walkPolicy(ctx, vv, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth, inherited, parent, edge)
 			if err != nil {
 				return nil, err
 			}
@@ -241,54 +343,272 @@ func (r *Redactor) walkPolicy(ctx context.Context, v any, session string, path [
 		}
 		return val, nil
 	default:
+		if inherited != nil {
+			return nil, fmt.Errorf("%w: unsupported selected JSON value", ErrUnsafeRequest)
+		}
 		return v, nil
 	}
 }
 
-// Image payloads and references are opaque protocol values. Applying text
-// detectors to Base64 data can corrupt an otherwise valid image when random
-// encoded bytes happen to resemble a phone number, token, or custom pattern.
-// Media policy decides whether these values may pass; text policy must never
-// rewrite them.
-func opaqueImageProtocolField(object map[string]any, key string, value any) bool {
-	key = strings.ToLower(key)
-	typ, _ := object["type"].(string)
-	isImageObject := strings.Contains(strings.ToLower(typ), "image")
-	switch key {
-	case "source":
-		return isImageObject
-	case "image_url", "input_image", "b64_json":
-		return true
-	case "file_id":
-		return isImageObject
-	case "result", "data", "image", "url":
-		return isImageObject
-	}
-	text, ok := value.(string)
-	return ok && isImageDataURL(text)
-}
-
+// Image payloads and references are opaque only when their containing object
+// is recognized as a protocol image block.
 func isImageDataURL(value string) bool {
 	value = strings.TrimLeft(value, " \t\r\n")
 	const prefix = "data:image/"
 	return len(value) >= len(prefix) && strings.EqualFold(value[:len(prefix)], prefix)
 }
 
-func (r *Redactor) fieldRule(key string) (FieldRule, bool) {
+const (
+	selectorKeys        = "keys"
+	selectorHeaders     = "headers"
+	selectorCookies     = "cookies"
+	selectorQueryParams = "query_params"
+	selectorFormFields  = "form_fields"
+)
+
+func (r *Redactor) fieldRule(selector, name string) (FieldRule, bool) {
 	for _, rule := range r.fieldRules {
-		for _, candidate := range rule.Keys {
-			if rule.CaseSensitive {
-				if key == candidate {
-					return rule, true
-				}
-				continue
-			}
-			if strings.EqualFold(key, candidate) {
+		var candidates []string
+		switch selector {
+		case selectorKeys:
+			candidates = rule.Keys
+		case selectorHeaders:
+			candidates = rule.Headers
+		case selectorCookies:
+			candidates = rule.Cookies
+		case selectorQueryParams:
+			candidates = rule.QueryParams
+		case selectorFormFields:
+			candidates = rule.FormFields
+		default:
+			return FieldRule{}, false
+		}
+		for _, candidate := range candidates {
+			caseSensitive := rule.CaseSensitive && selector != selectorHeaders
+			if caseSensitive && name == candidate || !caseSensitive && strings.EqualFold(name, candidate) {
 				return rule, true
 			}
 		}
 	}
 	return FieldRule{}, false
+}
+
+func fieldRuleBefore(left, right FieldRule) bool {
+	if left.Priority != right.Priority {
+		return left.Priority > right.Priority
+	}
+	return left.Name < right.Name
+}
+
+func (r *Redactor) transformUnselectedContent(
+	ctx context.Context,
+	text, session string,
+	occupied map[string]struct{},
+	result *TransformResult,
+	changed *bool,
+	capture bool,
+	budget *transformBudget,
+	depth int,
+	embeddedDepth int,
+) (string, error) {
+	if len(r.detectors) == 0 && len(r.fieldRules) == 0 {
+		return text, nil
+	}
+	if looksLikeHTMLContent(text) {
+		if output, handled, err := r.transformHTMLString(ctx, text, session, occupied, result, changed, capture, budget, depth, embeddedDepth, false); handled || err != nil {
+			return output, err
+		}
+	}
+	hasTextPolicy := len(r.detectors) > 0
+	httpOutput, handled, err := protectHTTPContent(text, httpContentPolicy{
+		Transform: func(selector, name, value string) (string, error) {
+			if rule, matched := r.fieldRule(selector, name); matched {
+				return r.transformSelectedString(value, session, occupied, result, changed, rule, capture)
+			}
+			if output, handled, err := r.transformHTMLString(ctx, value, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth+1, false); handled || err != nil {
+				return output, err
+			}
+			if output, embedded, embeddedErr := r.transformEmbeddedString(ctx, value, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth+1); embedded || embeddedErr != nil {
+				return output, embeddedErr
+			}
+			if selector == selectorQueryParams || selector == selectorFormFields {
+				if output, handled, err := r.transformAssignmentValue(ctx, name, value, session, occupied, result, changed, capture); handled || err != nil {
+					return output, err
+				}
+			}
+			return r.transformString(ctx, value, session, occupied, result, changed, capture)
+		},
+		JSON: func(value string) (string, error) {
+			return r.transformJSONDocument(ctx, value, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth+1)
+		},
+		HTML: func(value string) (string, error) {
+			output, _, err := r.transformHTMLString(ctx, value, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth+1, true)
+			return output, err
+		},
+		Text: func(value string) (string, error) {
+			if output, handled, err := r.transformHTMLString(ctx, value, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth+1, false); handled || err != nil {
+				return output, err
+			}
+			return r.transformString(ctx, value, session, occupied, result, changed, capture)
+		},
+		HeaderSelected: func(name string) bool {
+			_, matched := r.fieldRule(selectorHeaders, name)
+			return matched
+		},
+		HasHeaders: hasTextPolicy || r.hasHeaderRules,
+		HasCookies: hasTextPolicy || r.hasCookieRules,
+		HasQuery:   hasTextPolicy || r.hasQueryRules,
+		HasForm:    hasTextPolicy || r.hasFormRules,
+		HasJSON:    hasTextPolicy || r.hasKeyRules,
+	})
+	if err != nil {
+		return "", err
+	}
+	if handled {
+		return httpOutput, nil
+	}
+	if output, handled, err := r.transformHTMLString(ctx, text, session, occupied, result, changed, capture, budget, depth, embeddedDepth, false); handled || err != nil {
+		return output, err
+	}
+	if output, embedded, err := r.transformEmbeddedString(ctx, text, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth+1); embedded || err != nil {
+		return output, err
+	}
+	return r.transformString(ctx, text, session, occupied, result, changed, capture)
+}
+
+func (r *Redactor) transformJSONDocument(
+	ctx context.Context,
+	text, session string,
+	occupied map[string]struct{},
+	result *TransformResult,
+	changed *bool,
+	capture bool,
+	budget *transformBudget,
+	depth int,
+	embeddedDepth int,
+) (string, error) {
+	value, ok := decodeJSONDocument(text)
+	if !ok {
+		return "", fmt.Errorf("%w: malformed embedded JSON", ErrUnsafeRequest)
+	}
+	if err := budget.embedded(len(text), embeddedDepth); err != nil {
+		return "", err
+	}
+	localChanged := false
+	walked, err := r.walkDecodedEmbedded(ctx, value, session, occupied, result, &localChanged, capture, budget, depth, embeddedDepth)
+	if err != nil {
+		return "", err
+	}
+	if !localChanged {
+		return text, nil
+	}
+	output, err := marshalEmbeddedValue(walked)
+	if err != nil {
+		return "", fmt.Errorf("%w: encoding embedded JSON", ErrUnsafeRequest)
+	}
+	*changed = true
+	return output, nil
+}
+
+func (r *Redactor) transformEmbeddedString(
+	ctx context.Context,
+	text, session string,
+	occupied map[string]struct{},
+	result *TransformResult,
+	changed *bool,
+	capture bool,
+	budget *transformBudget,
+	depth int,
+	embeddedDepth int,
+) (string, bool, error) {
+	if len(text) > maxEmbeddedJSONBytes-budget.embeddedBytes {
+		if looksLikeEmbeddedJSON(text) {
+			return "", true, fmt.Errorf("%w: embedded JSON limit exceeded", ErrUnsafeRequest)
+		}
+		return "", false, nil
+	}
+	candidate, status := locateEmbeddedJSON(text)
+	if status == embeddedJSONNone {
+		return "", false, nil
+	}
+	if status == embeddedJSONMalformed {
+		if r.containsSelectedJSONField(embeddedCandidateInspectionText(text, candidate)) {
+			return "", true, fmt.Errorf("%w: malformed selected embedded JSON", ErrUnsafeRequest)
+		}
+		return "", false, nil
+	}
+	if err := budget.embedded(candidate.end-candidate.start, embeddedDepth); err != nil {
+		return "", true, err
+	}
+
+	candidateChanged := false
+	walked, err := r.walkDecodedEmbedded(ctx, candidate.value, session, occupied, result, &candidateChanged, capture, budget, depth, embeddedDepth)
+	if err != nil {
+		return "", true, err
+	}
+	frameChanged := false
+	prefix, err := r.transformEmbeddedFrame(ctx, text[:candidate.start], session, occupied, result, &frameChanged, capture, budget, depth+1, embeddedDepth+1)
+	if err != nil {
+		return "", true, err
+	}
+	suffix, err := r.transformEmbeddedFrame(ctx, text[candidate.end:], session, occupied, result, &frameChanged, capture, budget, depth+1, embeddedDepth+1)
+	if err != nil {
+		return "", true, err
+	}
+	if !candidateChanged && !frameChanged {
+		return text, true, nil
+	}
+	encoded := text[candidate.start:candidate.end]
+	if candidateChanged {
+		encoded, err = marshalEmbeddedCandidate(candidate, walked)
+		if err != nil {
+			return "", true, fmt.Errorf("%w: encoding embedded JSON", ErrUnsafeRequest)
+		}
+	}
+	*changed = true
+	return prefix + encoded + suffix, true, nil
+}
+
+func (r *Redactor) transformEmbeddedFrame(
+	ctx context.Context,
+	text, session string,
+	occupied map[string]struct{},
+	result *TransformResult,
+	changed *bool,
+	capture bool,
+	budget *transformBudget,
+	depth int,
+	embeddedDepth int,
+) (string, error) {
+	if output, handled, err := r.transformEmbeddedString(ctx, text, session, occupied, result, changed, capture, budget, depth, embeddedDepth); handled || err != nil {
+		return output, err
+	}
+	return r.transformString(ctx, text, session, occupied, result, changed, capture)
+}
+
+func (r *Redactor) walkDecodedEmbedded(
+	ctx context.Context,
+	value any,
+	session string,
+	occupied map[string]struct{},
+	result *TransformResult,
+	changed *bool,
+	capture bool,
+	budget *transformBudget,
+	depth int,
+	embeddedDepth int,
+) (any, error) {
+	if text, ok := value.(string); ok {
+		output, handled, err := r.transformEmbeddedString(ctx, text, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth+1)
+		if err != nil {
+			return nil, err
+		}
+		if handled {
+			return output, nil
+		}
+		return r.transformString(ctx, text, session, occupied, result, changed, capture)
+	}
+	return r.walkPolicy(ctx, value, session, occupied, result, changed, capture, budget, depth, embeddedDepth, nil, protocolStructuredBusiness, "")
 }
 
 func safeDetect(ctx context.Context, det detectors.Detector, text string) (matches []detectors.Match, err error) {
@@ -340,16 +660,62 @@ func selectNonOverlapping(matches []detectors.Match) []detectors.Match {
 	return selected
 }
 
-func (r *Redactor) transformString(ctx context.Context, text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, capture bool) (string, error) {
+func (r *Redactor) policyTextMatches(ctx context.Context, text string) ([]detectors.Match, error) {
 	var all []detectors.Match
 	for _, det := range r.detectors {
 		matches, err := safeDetect(ctx, det, text)
 		if err != nil {
-			return "", fmt.Errorf("%w: detector error", ErrUnsafeRequest)
+			return nil, fmt.Errorf("%w: detector error", ErrUnsafeRequest)
 		}
 		all = append(all, matches...)
 	}
+	return all, nil
+}
+
+func (r *Redactor) transformString(ctx context.Context, text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, capture bool) (string, error) {
+	all, err := r.policyTextMatches(ctx, text)
+	if err != nil {
+		return "", err
+	}
 	return r.transformMatches(text, session, occupied, result, changed, all, capture)
+}
+
+// transformAssignmentValue preserves detector context without mapping the
+// parameter name or its delimiter. Matches are projected onto the original
+// decoded value before priority resolution and mapping, never onto an alias.
+func (r *Redactor) transformAssignmentValue(ctx context.Context, name, value, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, capture bool) (string, bool, error) {
+	if value == "" || len(r.detectors) == 0 {
+		return value, false, nil
+	}
+	assignment := name + "=" + value
+	valueStart := len(name) + 1
+	contextMatches, err := r.policyTextMatches(ctx, assignment)
+	if err != nil {
+		return "", true, err
+	}
+	var projected []detectors.Match
+	for _, match := range contextMatches {
+		if match.Start < 0 || match.End <= match.Start || match.End > len(assignment) || assignment[match.Start:match.End] != match.Value {
+			return "", true, fmt.Errorf("%w: detector returned invalid span", ErrUnsafeRequest)
+		}
+		if match.End <= valueStart {
+			continue
+		}
+		match.Start = max(match.Start-valueStart, 0)
+		match.End -= valueStart
+		match.Value = value[match.Start:match.End]
+		projected = append(projected, match)
+	}
+	if len(projected) == 0 {
+		return value, false, nil
+	}
+	valueMatches, err := r.policyTextMatches(ctx, value)
+	if err != nil {
+		return "", true, err
+	}
+	projected = append(projected, valueMatches...)
+	output, err := r.transformMatches(value, session, occupied, result, changed, projected, capture)
+	return output, true, err
 }
 
 func (r *Redactor) transformFieldString(text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, rule FieldRule, capture bool) (string, error) {
@@ -372,18 +738,110 @@ func (r *Redactor) transformFieldString(text, session string, occupied map[strin
 	}}, capture)
 }
 
+func (r *Redactor) transformFieldNumber(number json.Number, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, rule FieldRule, capture bool) (json.Number, error) {
+	original := number.String()
+	action := rule.Action
+	if action == "" {
+		action = string(ActionPlaceholder)
+	}
+	category := rule.Category
+	if category == "" {
+		category = rule.Name
+	}
+	result.Categories = append(result.Categories, category)
+	result.Matches = append(result.Matches, MatchReport{Rule: rule.Name, Category: category, Action: action, Generator: rule.Generator})
+
+	replacement := original
+	switch Action(action) {
+	case ActionAllow:
+	case ActionPseudonymize:
+		if rule.Generator != "number" {
+			return "", fmt.Errorf("%w: selected number requires number generator", ErrUnsafeRequest)
+		}
+		var err error
+		replacement, err = r.store.MapNumber(session, original, occupied, func(attempt int) (string, error) {
+			return generateReplacement(r.store.key[:], "number", original, attempt)
+		})
+		if err != nil {
+			return "", fmt.Errorf("%w: numeric mapping failed", ErrUnsafeRequest)
+		}
+		result.Transformed++
+	case ActionBlock:
+		result.Blocked = true
+		result.Transformed++
+	default:
+		return "", fmt.Errorf("%w: selected number policy does not preserve JSON type", ErrUnsafeRequest)
+	}
+	if capture {
+		result.Captures = append(result.Captures, CaptureReport{
+			Rule: rule.Name, Category: category, Action: action,
+			Original: original, Replacement: replacement,
+		})
+	}
+	if replacement != original {
+		*changed = true
+	}
+	return json.Number(replacement), nil
+}
+
+func (r *Redactor) transformFieldBool(value bool, result *TransformResult, rule FieldRule, capture bool) (bool, error) {
+	action := rule.Action
+	if action == "" {
+		action = string(ActionPlaceholder)
+	}
+	if Action(action) != ActionAllow && Action(action) != ActionBlock {
+		return false, fmt.Errorf("%w: selected boolean policy does not preserve JSON type", ErrUnsafeRequest)
+	}
+	category := rule.Category
+	if category == "" {
+		category = rule.Name
+	}
+	result.Categories = append(result.Categories, category)
+	result.Matches = append(result.Matches, MatchReport{Rule: rule.Name, Category: category, Action: action, Generator: rule.Generator})
+	if Action(action) == ActionBlock {
+		result.Blocked = true
+		result.Transformed++
+	}
+	if capture {
+		original := strconv.FormatBool(value)
+		result.Captures = append(result.Captures, CaptureReport{
+			Rule: rule.Name, Category: category, Action: action,
+			Original: original, Replacement: original,
+		})
+	}
+	return value, nil
+}
+
 func (r *Redactor) transformMatches(text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, matches []detectors.Match, capture bool) (string, error) {
+	var b strings.Builder
+	last := 0
+	err := r.applyPolicyMatches(text, session, occupied, result, changed, matches, capture, func(m detectors.Match, replacement string) {
+		b.WriteString(text[last:m.Start])
+		b.WriteString(replacement)
+		last = m.End
+	})
+	if err != nil {
+		return "", err
+	}
+	if last == 0 {
+		return text, nil
+	}
+	b.WriteString(text[last:])
+	return b.String(), nil
+}
+
+// applyPolicyMatches shares policy decisions between ordinary text and HTML
+// span editing so detector priority, blocking and mappings have one owner.
+func (r *Redactor) applyPolicyMatches(text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, matches []detectors.Match, capture bool, emit func(detectors.Match, string)) error {
 	for _, m := range matches {
 		if m.Start < 0 || m.End <= m.Start || m.End > len(text) || text[m.Start:m.End] != m.Value {
-			return "", fmt.Errorf("%w: detector returned invalid span", ErrUnsafeRequest)
+			return fmt.Errorf("%w: detector returned invalid span", ErrUnsafeRequest)
 		}
 	}
 	if len(matches) == 0 {
-		return text, nil
+		return nil
 	}
 	selected := selectNonOverlapping(matches)
-	var b strings.Builder
-	last := 0
 	for _, m := range selected {
 		action := m.Action
 		if action == "" {
@@ -391,7 +849,6 @@ func (r *Redactor) transformMatches(text, session string, occupied map[string]st
 		}
 		result.Categories = append(result.Categories, m.Category)
 		result.Matches = append(result.Matches, MatchReport{Rule: m.Rule, Category: m.Category, Action: action, Generator: m.Generator})
-		b.WriteString(text[last:m.Start])
 		replacement := m.Value
 		switch Action(action) {
 		case ActionAllow:
@@ -399,19 +856,19 @@ func (r *Redactor) transformMatches(text, session string, occupied map[string]st
 			var err error
 			replacement, err = r.store.PlaceholderForSession(session, m.Value, occupied)
 			if err != nil {
-				return "", fmt.Errorf("%w: mapping failed", ErrUnsafeRequest)
+				return fmt.Errorf("%w: mapping failed", ErrUnsafeRequest)
 			}
 			result.Transformed++
 		case ActionPseudonymize:
 			if err := ValidateAction(action, m.Generator); err != nil {
-				return "", fmt.Errorf("%w: invalid rule policy", ErrUnsafeRequest)
+				return fmt.Errorf("%w: invalid rule policy", ErrUnsafeRequest)
 			}
 			var err error
 			replacement, err = r.store.Map(session, m.Value, occupied, func(attempt int) (string, error) {
 				return generateReplacement(r.store.key[:], m.Generator, m.Value, attempt)
 			})
 			if err != nil {
-				return "", fmt.Errorf("%w: generator or mapping failed", ErrUnsafeRequest)
+				return fmt.Errorf("%w: generator or mapping failed", ErrUnsafeRequest)
 			}
 			result.Transformed++
 		case ActionMask:
@@ -425,7 +882,7 @@ func (r *Redactor) transformMatches(text, session string, occupied map[string]st
 			result.Blocked = true
 			result.Transformed++
 		default:
-			return "", fmt.Errorf("%w: unknown action", ErrUnsafeRequest)
+			return fmt.Errorf("%w: unknown action", ErrUnsafeRequest)
 		}
 		if capture {
 			result.Captures = append(result.Captures, CaptureReport{
@@ -433,14 +890,12 @@ func (r *Redactor) transformMatches(text, session string, occupied map[string]st
 				Original: m.Value, Replacement: replacement,
 			})
 		}
-		b.WriteString(replacement)
+		emit(m, replacement)
 		if replacement != m.Value {
 			*changed = true
 		}
-		last = m.End
 	}
-	b.WriteString(text[last:])
-	return b.String(), nil
+	return nil
 }
 
 func detectImageMedia(v any) bool {
