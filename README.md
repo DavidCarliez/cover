@@ -237,6 +237,13 @@ value is protected again once a rule matches it.
 | `redact` | `[REDACTED]` | One-way; not restored |
 | `block` | Nothing; Cover rejects the complete request locally | No upstream response |
 
+When matches overlap, no byte selected by a protective rule is sent. A
+`block` match blocks the request. Otherwise the highest-priority match that
+covers the whole overlapping span is applied; if none does, the span becomes
+one placeholder. An `allow` match only exempts protective matches that it
+fully contains and that do not outrank it, so allowing `corp.example.com`
+does not expose `alice@corp.example.com`.
+
 Pseudonym generators: `ipv4`, `ipv6`, `hostname`, `domain`, `fqdn`, `email`,
 `username`, `password`, `secret`, `uuid`, `url`, `alias`, and `number`.
 

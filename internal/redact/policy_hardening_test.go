@@ -494,3 +494,84 @@ func TestCaseInsensitiveDisabledRule(t *testing.T) {
 		t.Fatalf("case-insensitive rule got %q", got)
 	}
 }
+
+func TestOverlapResolutionNeverExposesProtectedBytes(t *testing.T) {
+	m := func(start, end, priority int, action, rule string) detectors.Match {
+		return detectors.Match{Start: start, End: end, Priority: priority, Action: action, Rule: rule}
+	}
+	text := "alice.secret@corp.example.com and more"
+	for _, tc := range []struct {
+		name    string
+		matches []detectors.Match
+		want    []string // rule:start-end:action
+	}{
+		{
+			name:    "allow inside protective match does not exempt it",
+			matches: []detectors.Match{m(13, 29, 300, "allow", "allow_domain"), m(0, 29, 100, "pseudonymize", "email")},
+			want:    []string{"email:0-29:pseudonymize"},
+		},
+		{
+			name:    "allow covering a lower-priority match exempts it",
+			matches: []detectors.Match{m(0, 29, 300, "allow", "allow_email"), m(13, 29, 100, "pseudonymize", "domain")},
+			want:    []string{"allow_email:0-29:allow"},
+		},
+		{
+			name:    "allow does not exempt a higher-priority match",
+			matches: []detectors.Match{m(0, 29, 50, "allow", "allow_email"), m(13, 29, 100, "pseudonymize", "domain")},
+			want:    []string{"domain:13-29:pseudonymize"},
+		},
+		{
+			name:    "covering lower-priority match wins over a contained one",
+			matches: []detectors.Match{m(0, 5, 300, "pseudonymize", "name"), m(0, 29, 100, "pseudonymize", "email")},
+			want:    []string{"email:0-29:pseudonymize"},
+		},
+		{
+			name:    "partial overlap becomes one placeholder",
+			matches: []detectors.Match{m(0, 12, 300, "pseudonymize", "user"), m(6, 29, 100, "pseudonymize", "tail")},
+			want:    []string{"user:0-29:placeholder"},
+		},
+		{
+			name:    "block wins inside a cluster",
+			matches: []detectors.Match{m(0, 29, 300, "pseudonymize", "email"), m(6, 12, 1, "block", "forbidden")},
+			want:    []string{"forbidden:6-12:block"},
+		},
+		{
+			name:    "separate matches stay separate",
+			matches: []detectors.Match{m(0, 5, 1, "redact", "a"), m(34, 38, 1, "allow", "b")},
+			want:    []string{"a:0-5:redact", "b:34-38:allow"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for i := range tc.matches {
+				tc.matches[i].Value = text[tc.matches[i].Start:tc.matches[i].End]
+			}
+			var got []string
+			for _, s := range selectNonOverlapping(text, tc.matches) {
+				if s.Value != text[s.Start:s.End] {
+					t.Fatalf("selected value %q does not match span", s.Value)
+				}
+				got = append(got, fmt.Sprintf("%s:%d-%d:%s", s.Rule, s.Start, s.End, s.Action))
+			}
+			if fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("selected %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAllowedSubspanDoesNotExposeEmail(t *testing.T) {
+	d, err := detectors.NewRegexDetector([]string{"email"}, []detectors.CustomPattern{{
+		Name: "allow_corp_domain", Pattern: `corp\.example\.com`, Action: "allow", Priority: 300,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := New(NewStore(), 0, RedactorOptions{}, d)
+	out, _ := transformText(t, r, "s", "mail alice.secret@corp.example.com or visit corp.example.com")
+	if strings.Contains(out, "alice.secret") {
+		t.Fatalf("email leaked through allowed subspan: %q", out)
+	}
+	if !strings.HasSuffix(out, "visit corp.example.com") {
+		t.Fatalf("standalone allowed domain changed: %q", out)
+	}
+}
