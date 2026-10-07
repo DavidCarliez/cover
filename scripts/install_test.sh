@@ -71,6 +71,28 @@ fi
 grep -Fq "checksum verification failed" "$COVER_INSTALL_TEST_DIR/broken.log" || fail "checksum failure was unclear"
 grep -Fxq "existing binary" "$BROKEN_BIN/cover" || fail "failed verification replaced the existing binary"
 
+# A checksums file with two entries for the asset is ambiguous.
+{
+  sha256sum "$RELEASE_DIR/$ASSET" | awk -v asset="$ASSET" '{print $1 "  " asset}'
+  printf '%064d  %s\n' 0 "$ASSET"
+} >"$RELEASE_DIR/checksums.txt"
+if COVER_VERSION="$VERSION" \
+  COVER_RELEASE_BASE_URL="file://$COVER_INSTALL_TEST_DIR/releases" \
+  COVER_BIN_DIR="$BROKEN_BIN" \
+  COVER_SKIP_SETUP=1 \
+  bash "$COVER_REPO_DIR/scripts/install.sh" >"$COVER_INSTALL_TEST_DIR/duplicate.log" 2>&1; then
+  fail "duplicate checksum entries were accepted"
+fi
+grep -Fq "more than one entry" "$COVER_INSTALL_TEST_DIR/duplicate.log" || fail "duplicate checksum failure was unclear"
+sha256sum "$RELEASE_DIR/$ASSET" | awk -v asset="$ASSET" '{print $1 "  " asset}' >"$RELEASE_DIR/checksums.txt"
+
+# A truncated download runs nothing.
+head -c 2000 "$COVER_REPO_DIR/scripts/install.sh" >"$COVER_INSTALL_TEST_DIR/truncated.sh"
+TRUNCATED_BIN="$COVER_INSTALL_TEST_DIR/truncated-bin"
+COVER_VERSION="$VERSION" COVER_BIN_DIR="$TRUNCATED_BIN" \
+  bash "$COVER_INSTALL_TEST_DIR/truncated.sh" >/dev/null 2>&1 || true
+[[ ! -e "$TRUNCATED_BIN" ]] || fail "a truncated installer ran part of the installation"
+
 MOCK_BIN="$COVER_INSTALL_TEST_DIR/mock-bin"
 mkdir -p "$MOCK_BIN"
 cat >"$MOCK_BIN/uname" <<'FAKE_UNAME'

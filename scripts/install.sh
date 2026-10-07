@@ -11,10 +11,17 @@
 
 set -euo pipefail
 
+# The whole script runs from main at the end, so a download cut short by the
+# network runs nothing instead of a partial script.
+main() {
+
 GITHUB_REPO="${COVER_GITHUB_REPO:-DavidCarliez/cover}"
 LATEST_URL="${COVER_LATEST_URL:-https://github.com/${GITHUB_REPO}/releases/latest}"
 RELEASE_BASE_URL="${COVER_RELEASE_BASE_URL:-https://github.com/${GITHUB_REPO}/releases/download}"
 BIN_DIR="${COVER_BIN_DIR:-${HOME}/.local/bin}"
+
+# Refuse plaintext downloads and redirects; file:// serves local test releases.
+CURL_SECURE=(--proto '=https,file' --proto-redir '=https' --tlsv1.2)
 
 bold() { printf '\033[1m%s\033[0m\n' "$*"; }
 dim()  { printf '\033[2m%s\033[0m\n' "$*"; }
@@ -52,7 +59,7 @@ if [[ -n "${COVER_VERSION:-}" ]]; then
   RELEASE_TAG="$COVER_VERSION"
 else
   dim "Resolving the latest Cover release..."
-  EFFECTIVE_URL=$(curl -fsSL --retry 3 --retry-delay 1 -o /dev/null -w '%{url_effective}' "$LATEST_URL") || \
+  EFFECTIVE_URL=$(curl "${CURL_SECURE[@]}" -fsSL --retry 3 --retry-delay 1 -o /dev/null -w '%{url_effective}' "$LATEST_URL") || \
     fail "could not resolve the latest Cover release."
   RELEASE_TAG=${EFFECTIVE_URL%/}
   RELEASE_TAG=${RELEASE_TAG##*/}
@@ -84,13 +91,14 @@ CHECKSUMS_PATH="${INSTALL_WORK_DIR}/checksums.txt"
 RELEASE_URL="${RELEASE_BASE_URL}/${RELEASE_TAG}"
 
 dim "Downloading Cover ${RELEASE_TAG} for ${RELEASE_OS}/${RELEASE_ARCH}..."
-curl -fsSL --retry 3 --retry-delay 1 -o "$ARCHIVE_PATH" "${RELEASE_URL}/${ARCHIVE_NAME}" || \
+curl "${CURL_SECURE[@]}" -fsSL --retry 3 --retry-delay 1 -o "$ARCHIVE_PATH" "${RELEASE_URL}/${ARCHIVE_NAME}" || \
   fail "release asset not found: ${ARCHIVE_NAME}"
-curl -fsSL --retry 3 --retry-delay 1 -o "$CHECKSUMS_PATH" "${RELEASE_URL}/checksums.txt" || \
+curl "${CURL_SECURE[@]}" -fsSL --retry 3 --retry-delay 1 -o "$CHECKSUMS_PATH" "${RELEASE_URL}/checksums.txt" || \
   fail "checksums.txt is missing from ${RELEASE_TAG}"
 
-EXPECTED_CHECKSUM=$(awk -v asset="$ARCHIVE_NAME" '$2 == asset || $2 == "*" asset { print $1; exit }' "$CHECKSUMS_PATH")
+EXPECTED_CHECKSUM=$(awk -v asset="$ARCHIVE_NAME" '$2 == asset || $2 == "*" asset { print $1 }' "$CHECKSUMS_PATH")
 [[ -n "$EXPECTED_CHECKSUM" ]] || fail "checksums.txt has no entry for ${ARCHIVE_NAME}"
+[[ "$EXPECTED_CHECKSUM" != *$'\n'* ]] || fail "checksums.txt has more than one entry for ${ARCHIVE_NAME}"
 
 if command -v sha256sum >/dev/null 2>&1; then
   ACTUAL_CHECKSUM=$(sha256sum "$ARCHIVE_PATH" | awk '{print $1}')
@@ -132,7 +140,7 @@ if [[ ":${PATH}:" != *":${BIN_DIR}:"* ]]; then
   echo
   echo "Note: ${BIN_DIR} is not on your PATH."
   echo "Add this to your shell profile:"
-  echo '  export PATH="${HOME}/.local/bin:${PATH}"'
+  printf '  export PATH="%s:${PATH}"\n' "$BIN_DIR"
   echo
 fi
 
@@ -151,3 +159,6 @@ if ((${#INSTALL_ARGS[@]} > 0)); then
 else
   "${BIN_DIR}/${BINARY_NAME}" install
 fi
+}
+
+main "$@"
