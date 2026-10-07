@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Official Cover privacy integrations",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "plugins": [
     {
       "name": "cover-plugin",
       "description": "Official fail-closed Cover privacy plugin for Pi and Oh My Pi",
       "source": "./integrations/harness",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "David Carliez"
       },

@@ -1,6 +1,6 @@
 {
   "name": "cover-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Official fail-closed Cover privacy plugin for Pi and Oh My Pi",
   "type": "module",
   "main": "./index.js",
