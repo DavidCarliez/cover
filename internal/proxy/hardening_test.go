@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -493,21 +494,76 @@ func TestEphemeralSessionsCannotBeNamedByClients(t *testing.T) {
 }
 
 func TestLooksLikeSSE(t *testing.T) {
-	for prefix, want := range map[string]bool{
-		"event: message\n":    true,
-		"data: {}\n":          true,
-		"id: 1\ndata: x\n":    true,
-		"retry: 100\n":        true,
-		": comment\n":         true,
-		"\xef\xbb\xbfdata: x": true,
-		"\n\ndata: x\n":       true,
-		`{"choices":[]}`:      false,
-		"identifier: nope":    false,
-		"HTTP/1.1 200 OK\r\n": false,
+	type verdict struct{ sse, decided bool }
+	for prefix, want := range map[string]verdict{
+		"event: message\n":    {true, true},
+		"data: {}\n":          {true, true},
+		"id: 1\ndata: x\n":    {true, true},
+		"retry: 100\n":        {true, true},
+		": comment\n":         {true, true},
+		"\xef\xbb\xbfdata: x": {true, true},
+		"\n\ndata: x\n":       {true, true},
+		`{"choices":[]}`:      {false, true},
+		"identifier: nope":    {false, true},
+		"HTTP/1.1 200 OK\r\n": {false, true},
+		// These could still begin a field name.
+		"":               {false, false},
+		"\xef\xbb":       {false, false},
+		"\r\n\r\n":       {false, false},
+		"da":             {false, false},
+		"\xef\xbb\xbfev": {false, false},
 	} {
-		if got := looksLikeSSE([]byte(prefix)); got != want {
-			t.Errorf("looksLikeSSE(%q)=%v, want %v", prefix, got, want)
+		if sse, decided := looksLikeSSE([]byte(prefix)); sse != want.sse || decided != want.decided {
+			t.Errorf("looksLikeSSE(%q)=%v,%v, want %v,%v", prefix, sse, decided, want.sse, want.decided)
 		}
+	}
+}
+
+func TestHeaderlessSSEShortFirstEventIsNotHeldBack(t *testing.T) {
+	release := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header()["Content-Type"] = nil
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, ": ping\n\n")
+		w.(http.Flusher).Flush()
+		// A reasoning model may think for a long time after a keepalive.
+		select {
+		case <-release:
+		case <-req.Context().Done():
+		}
+	}))
+	defer upstream.Close()
+	defer close(release)
+	p, err := New(upstream.URL, newTestRedactor(t), nil, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(p)
+	defer front.Close()
+
+	type reply struct {
+		contentType, first string
+		err                error
+	}
+	replies := make(chan reply, 1)
+	go func() {
+		response, err := http.Post(front.URL, "application/json", strings.NewReader(`{"input":"hello"}`))
+		if err != nil {
+			replies <- reply{err: err}
+			return
+		}
+		defer response.Body.Close()
+		buf := make([]byte, 64)
+		n, err := response.Body.Read(buf)
+		replies <- reply{response.Header.Get("Content-Type"), string(buf[:n]), err}
+	}()
+	select {
+	case got := <-replies:
+		if got.err != nil || got.contentType != "text/event-stream" || got.first != ": ping\n\n" {
+			t.Fatalf("reply=%+v", got)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("the first event was held back until more bytes arrived")
 	}
 }
 

@@ -272,9 +272,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Some compatible routers omit the media type on SSE responses.
 		// Keep the sniff bounded and replay every byte through the selected writer.
 		buffered := bufio.NewReader(resp.Body)
-		prefix, _ := buffered.Peek(64)
 		responseBody = buffered
-		sse = looksLikeSSE(prefix)
+		sse = sniffSSE(buffered)
 		if sse {
 			ct = "text/event-stream"
 			resp.Header.Set("Content-Type", ct)
@@ -472,17 +471,43 @@ func removeHopByHopHeaders(h http.Header) {
 	}
 }
 
-// looksLikeSSE recognizes an event stream without a media type by its first
-// field, after an optional byte-order mark and blank lines.
-func looksLikeSSE(prefix []byte) bool {
-	prefix = bytes.TrimPrefix(prefix, []byte("\xef\xbb\xbf"))
-	prefix = bytes.TrimLeft(prefix, "\r\n")
-	for _, field := range []string{"event:", "data:", "id:", "retry:", ":"} {
-		if bytes.HasPrefix(prefix, []byte(field)) {
-			return true
+// sniffSSE reports whether a response without a media type starts like an
+// event stream. It reads only until the first bytes decide, so a short
+// first event followed by a pause is not held back.
+func sniffSSE(r *bufio.Reader) bool {
+	for n := 1; n <= maxSSESniffBytes; n++ {
+		n = max(n, min(r.Buffered(), maxSSESniffBytes))
+		prefix, err := r.Peek(n)
+		if sse, decided := looksLikeSSE(prefix); decided || err != nil {
+			return sse
 		}
 	}
 	return false
+}
+
+const maxSSESniffBytes = 64
+
+// looksLikeSSE recognizes an event stream by its first field, after an
+// optional byte order mark and blank lines. It is undecided while the bytes
+// could still begin a field name.
+func looksLikeSSE(prefix []byte) (sse, decided bool) {
+	bom := []byte("\xef\xbb\xbf")
+	if len(prefix) < len(bom) && bytes.HasPrefix(bom, prefix) {
+		return false, false
+	}
+	prefix = bytes.TrimPrefix(prefix, bom)
+	prefix = bytes.TrimLeft(prefix, "\r\n")
+	if len(prefix) == 0 {
+		return false, false
+	}
+	undecided := false
+	for _, field := range []string{"event:", "data:", "id:", "retry:", ":"} {
+		if bytes.HasPrefix(prefix, []byte(field)) {
+			return true, true
+		}
+		undecided = undecided || bytes.HasPrefix([]byte(field), prefix)
+	}
+	return false, !undecided
 }
 
 func (p *Proxy) logf(format string, args ...any) {
