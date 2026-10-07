@@ -78,3 +78,19 @@ func TestLoopbackListenerDetection(t *testing.T) {
 		t.Fatal("remote listener was treated as loopback")
 	}
 }
+
+func TestPlaintextRemoteUpstream(t *testing.T) {
+	for upstream, want := range map[string]bool{
+		"http://router.example.com/v1": true,
+		"http://203.0.113.5:4000":      true,
+		"https://router.example.com":   false,
+		"http://127.0.0.1:4102":        false,
+		"http://localhost:4102":        false,
+		"http://192.168.1.20:4000":     false,
+		"http://10.0.0.7:4000":         false,
+	} {
+		if got := plaintextRemoteUpstream(upstream); got != want {
+			t.Errorf("plaintextRemoteUpstream(%q)=%v, want %v", upstream, got, want)
+		}
+	}
+}

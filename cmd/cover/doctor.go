@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -120,6 +121,8 @@ func runDoctor(ctx context.Context, timeout time.Duration) doctorReport {
 		report.add("upstream routing", "fail", "upstream is not configured")
 	} else if upstreamLoopsToCover(cfg.Upstream, cfg.Listen) {
 		report.add("upstream routing", "fail", "upstream points back to Cover and would create a loop")
+	} else if plaintextRemoteUpstream(cfg.Upstream) {
+		report.add("upstream routing", "warn", "upstream uses plain http to a non-local host; API keys and protected requests cross the network unencrypted")
 	} else {
 		report.add("upstream routing", "pass", "upstream is distinct from the Cover listener")
 	}
@@ -254,6 +257,21 @@ func checkEnvironment(report *doctorReport, listen string) {
 
 func normalizeBaseURL(value string) string {
 	return strings.TrimRight(strings.TrimSpace(value), "/")
+}
+
+// plaintextRemoteUpstream reports an http upstream outside loopback and
+// private networks.
+func plaintextRemoteUpstream(upstream string) bool {
+	u, err := url.Parse(upstream)
+	if err != nil || u.Scheme != "http" {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	ip := net.ParseIP(host)
+	return ip == nil || !(ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast())
 }
 
 func upstreamLoopsToCover(upstream, listen string) bool {
