@@ -39,6 +39,9 @@ const (
 
 var errBodyTooLarge = errors.New("body exceeds configured limit")
 
+// contentMonitorWriteTimeout disconnects a live viewer that stops reading.
+const contentMonitorWriteTimeout = 10 * time.Second
+
 // hopHeader carries one random identifier per Cover process. A request that
 // already carries this process's identifier has looped back through it.
 const hopHeader = "X-Cover-Hop"
@@ -357,6 +360,7 @@ func (p *Proxy) serveContentMonitor(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 	encoder := json.NewEncoder(w)
+	controller := http.NewResponseController(w)
 	for {
 		select {
 		case <-r.Context().Done():
@@ -365,6 +369,8 @@ func (p *Proxy) serveContentMonitor(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			// A viewer that stops reading must not hold this handler forever.
+			_ = controller.SetWriteDeadline(time.Now().Add(contentMonitorWriteTimeout))
 			if err := encoder.Encode(event); err != nil {
 				return
 			}

@@ -34,11 +34,16 @@ type ContentEvent struct {
 	Sent        json.RawMessage  `json:"sent,omitempty"`
 }
 
+// contentMonitorBuffer lets a viewer absorb a burst of requests without
+// being disconnected, while bounding the sensitive events held in memory.
+const contentMonitorBuffer = 16
+
 type Hub struct {
 	mu          sync.Mutex
 	nextID      uint64
 	maxMonitors int
 	subscribers map[uint64]chan ContentEvent
+	closed      bool
 }
 
 func NewHub(maxMonitors int) *Hub {
@@ -63,12 +68,15 @@ func (h *Hub) Subscribe() (<-chan ContentEvent, func(), error) {
 	}
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.closed {
+		return nil, func() {}, fmt.Errorf("content monitor is shutting down")
+	}
 	if len(h.subscribers) >= h.maxMonitors {
 		return nil, func() {}, ErrTooManyContentMonitors
 	}
 	h.nextID++
 	id := h.nextID
-	ch := make(chan ContentEvent, 1)
+	ch := make(chan ContentEvent, contentMonitorBuffer)
 	h.subscribers[id] = ch
 	cancel := func() {
 		h.mu.Lock()
@@ -96,6 +104,21 @@ func (h *Hub) Publish(event ContentEvent) {
 			delete(h.subscribers, id)
 			close(ch)
 		}
+	}
+}
+
+// Close ends every live content stream and refuses new viewers, so a
+// graceful shutdown does not wait for monitors that never finish.
+func (h *Hub) Close() {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.closed = true
+	for id, ch := range h.subscribers {
+		delete(h.subscribers, id)
+		close(ch)
 	}
 }
 

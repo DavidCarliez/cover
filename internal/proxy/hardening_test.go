@@ -2,18 +2,23 @@ package proxy
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/DavidCarliez/cover/internal/activity"
+	"github.com/DavidCarliez/cover/internal/daemon"
 	"github.com/DavidCarliez/cover/internal/redact"
 	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
@@ -503,5 +508,53 @@ func TestLooksLikeSSE(t *testing.T) {
 		if got := looksLikeSSE([]byte(prefix)); got != want {
 			t.Errorf("looksLikeSSE(%q)=%v, want %v", prefix, got, want)
 		}
+	}
+}
+
+func TestLiveContentMonitorDoesNotBlockShutdown(t *testing.T) {
+	hub := activity.NewHub(2)
+	p, err := New("http://127.0.0.1:1", newTestRedactor(t), nil, Options{ContentHub: hub, ContentToken: "token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: p}
+	srv.RegisterOnShutdown(hub.Close)
+	go srv.Serve(ln)
+	req, _ := http.NewRequest(http.MethodGet, "http://"+ln.Addr().String()+activity.ContentEndpoint, nil)
+	req.Header.Set("Authorization", "Bearer token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !hub.HasSubscribers() {
+		t.Fatalf("monitor did not connect: %d", resp.StatusCode)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown waited for the live monitor: %v", err)
+	}
+}
+
+func TestHealthEndpointReportsProcessToLoopback(t *testing.T) {
+	p, err := New("http://127.0.0.1:1", newTestRedactor(t), nil, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(p)
+	defer front.Close()
+	resp, err := http.Get(front.URL + daemon.HealthEndpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var health daemon.Health
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil || health.Service != "cover" || health.PID != os.Getpid() {
+		t.Fatalf("health=%+v err=%v", health, err)
 	}
 }

@@ -507,7 +507,9 @@ Control characters are escaped so values cannot span multiple terminal lines.
 Add `--json` to include the full event and exact transformed outbound JSON.
 The view is live-only and never added to the audit log. Capture starts after an authenticated local
 viewer connects and stops when it disconnects. The stream is loopback-only,
-uses a token derived from the installation key, and disconnects slow viewers.
+uses a token derived from the installation key, and disconnects a viewer that
+falls 16 events behind or stops reading for 10 seconds. Stopping Cover ends
+live views immediately instead of waiting for them.
 
 > [!WARNING]
 > This terminal output is sensitive. Do not use `--show-content` in shared

@@ -58,12 +58,32 @@ func TestHubDisconnectsSlowMonitorWithoutBlocking(t *testing.T) {
 	if _, _, err := hub.Subscribe(); !errors.Is(err, ErrTooManyContentMonitors) {
 		t.Fatalf("second subscription error=%v", err)
 	}
-	hub.Publish(ContentEvent{Time: time.Now()})
-	hub.Publish(ContentEvent{Time: time.Now()})
-	if _, ok := <-ch; !ok {
-		t.Fatal("buffered event was lost")
+	// A burst within the buffer is delivered; one more disconnects the viewer.
+	for range contentMonitorBuffer + 1 {
+		hub.Publish(ContentEvent{Time: time.Now()})
+	}
+	for range contentMonitorBuffer {
+		if _, ok := <-ch; !ok {
+			t.Fatal("buffered event was lost")
+		}
 	}
 	if _, ok := <-ch; ok {
 		t.Fatal("slow monitor was not disconnected")
+	}
+}
+
+func TestHubCloseEndsMonitors(t *testing.T) {
+	hub := NewHub(1)
+	ch, cancel, err := hub.Subscribe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	hub.Close()
+	if _, ok := <-ch; ok {
+		t.Fatal("monitor stream stayed open after Close")
+	}
+	if _, _, err := hub.Subscribe(); err == nil {
+		t.Fatal("a closed hub accepted a new monitor")
 	}
 }

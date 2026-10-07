@@ -607,6 +607,7 @@ func runForeground() error {
 	}
 
 	srv := &http.Server{Handler: p, ReadHeaderTimeout: 30 * time.Second}
+	srv.RegisterOnShutdown(contentHub.Close)
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
