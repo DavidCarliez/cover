@@ -70,35 +70,23 @@ func generateReplacement(key []byte, generator, original string, attempt int) (s
 		ip[0], ip[1] = 0xfd, h[1]
 		return ip.String(), nil
 	case "hostname":
-		return fmt.Sprintf("host%d", 10+int(h[0])%90), nil
+		return "host-" + pseudonymToken(h[:], 6), nil
 	case "domain", "fqdn":
-		parts := strings.Split(strings.TrimSuffix(original, "."), ".")
-		suffix := "internal"
-		if len(parts) > 1 {
-			suffix = parts[len(parts)-1]
-		}
-		return fmt.Sprintf("host%d.example.%s", 10+int(h[0])%90, suffix), nil
+		return "host-" + pseudonymToken(h[:], 6) + ".example." + reservedSuffix(original), nil
 	case "email":
-		parts := strings.SplitN(original, "@", 2)
-		tld := "com"
-		if len(parts) == 2 {
-			domainParts := strings.Split(parts[1], ".")
-			if len(domainParts) > 1 {
-				tld = domainParts[len(domainParts)-1]
-			}
+		domain := ""
+		if at := strings.LastIndexByte(original, '@'); at >= 0 {
+			domain = original[at+1:]
 		}
-		n := 100 + int(h[0])*4 + int(h[1])%4
-		return fmt.Sprintf("user%d@example.%s", n, tld), nil
+		return pseudonymPerson(h[:], ".") + "@example." + reservedSuffix(domain), nil
 	case "username":
-		first := []string{"alex", "casey", "jordan", "morgan", "riley", "taylor"}
-		last := []string{"martin", "lee", "miller", "parker", "reed", "young"}
 		sep := "_"
 		if strings.Contains(original, ".") {
 			sep = "."
 		} else if strings.Contains(original, "-") {
 			sep = "-"
 		}
-		return first[int(h[0])%len(first)] + sep + last[int(h[1])%len(last)], nil
+		return pseudonymPerson(h[:], sep), nil
 	case "password", "secret":
 		alphabet := "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%"
 		n := len(original)
@@ -143,7 +131,7 @@ func generateReplacement(key []byte, generator, original string, attempt int) (s
 			fakeHost += ":" + port
 		}
 		u.Host = fakeHost
-		return u.String(), nil
+		return pseudonymizeURLParts(key, u), nil
 	case "alias":
 		return "alias-" + strconv.FormatUint(uint64(h[0])<<24|uint64(h[1])<<16|uint64(h[2])<<8|uint64(h[3]), 36), nil
 	default:
@@ -177,11 +165,102 @@ func generateNumberReplacement(key []byte, original string, attempt int) (string
 	return replacement, nil
 }
 
+// maskValue keeps at most a sixth of the value visible at its edges and
+// masks short values completely.
 func maskValue(value string) string {
 	r := []rune(value)
-	if len(r) <= 4 {
-		return strings.Repeat("*", len(r))
+	keep := min(len(r)/6, 2)
+	if len(r) < 6 {
+		keep = 0
 	}
-	keep := 2
 	return string(r[:keep]) + strings.Repeat("*", len(r)-2*keep) + string(r[len(r)-keep:])
+}
+
+const pseudonymAlphabet = "abcdefghijkmnpqrstuvwxyz23456789"
+
+// pseudonymToken returns n characters drawn from h. Lowercase letters and
+// digits without look-alike characters keep tokens valid in host names.
+func pseudonymToken(h []byte, n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = pseudonymAlphabet[int(h[i%len(h)])%len(pseudonymAlphabet)]
+	}
+	return string(b)
+}
+
+var (
+	pseudonymFirstNames = []string{
+		"alex", "avery", "blake", "cameron", "casey", "dakota", "drew", "emery",
+		"finley", "harper", "hayden", "jamie", "jordan", "kendall", "logan", "morgan",
+		"parker", "peyton", "quinn", "reese", "riley", "rowan", "sage", "taylor",
+	}
+	pseudonymLastNames = []string{
+		"adams", "baker", "carter", "clark", "collins", "evans", "foster", "graham",
+		"hayes", "hughes", "kelly", "lee", "martin", "miller", "morris", "parker",
+		"price", "reed", "ross", "shaw", "turner", "walsh", "ward", "young",
+	}
+)
+
+// pseudonymPerson returns a realistic name-based identifier from a space of
+// more than half a million values.
+func pseudonymPerson(h []byte, sep string) string {
+	n := (int(h[2])<<8 | int(h[3])) % 1000
+	return fmt.Sprintf("%s%s%s%03d", pseudonymFirstNames[int(h[0])%len(pseudonymFirstNames)], sep,
+		pseudonymLastNames[int(h[1])%len(pseudonymLastNames)], n)
+}
+
+// reservedSuffix keeps a private-use suffix such as "internal" and otherwise
+// uses "com", so a fake domain under "example." never names a real
+// registrable domain such as example.de.
+func reservedSuffix(domain string) string {
+	labels := strings.Split(strings.TrimSuffix(strings.ToLower(domain), "."), ".")
+	switch suffix := labels[len(labels)-1]; suffix {
+	case "internal", "local", "lan", "home", "corp", "intranet", "private", "test", "invalid", "localhost":
+		if len(labels) > 1 {
+			return suffix
+		}
+	}
+	return "com"
+}
+
+// pseudonymizeURLParts replaces credentials, path segments, query values and
+// the fragment of u. The scheme, port, segment count and query keys remain so
+// the fake still reads as a URL of the same shape.
+func pseudonymizeURLParts(key []byte, u *url.URL) string {
+	part := func(kind, value string, n int) string {
+		h := keyedDigest(key, "pseudonym:url-"+kind, value, 0)
+		return pseudonymToken(h[:], n)
+	}
+	if u.User != nil {
+		username := "user-" + part("user", u.User.Username(), 6)
+		if password, ok := u.User.Password(); ok {
+			u.User = url.UserPassword(username, part("password", password, 16))
+		} else {
+			u.User = url.User(username)
+		}
+	}
+	if u.Path != "" {
+		segments := strings.Split(u.EscapedPath(), "/")
+		for i, segment := range segments {
+			if segment != "" {
+				segments[i] = "p-" + part("path", segment, 6)
+			}
+		}
+		u.RawPath = ""
+		u.Path = strings.Join(segments, "/")
+	}
+	if u.RawQuery != "" {
+		pairs := strings.Split(u.RawQuery, "&")
+		for i, pair := range pairs {
+			name, value, hasValue := strings.Cut(pair, "=")
+			if hasValue && value != "" {
+				pairs[i] = name + "=v-" + part("query", value, 6)
+			}
+		}
+		u.RawQuery = strings.Join(pairs, "&")
+	}
+	if u.Fragment != "" {
+		u.Fragment, u.RawFragment = "f-"+part("fragment", u.EscapedFragment(), 6), ""
+	}
+	return u.String()
 }

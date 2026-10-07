@@ -246,6 +246,12 @@ does not expose `alice@corp.example.com`.
 
 Pseudonym generators: `ipv4`, `ipv6`, `hostname`, `domain`, `fqdn`, `email`,
 `username`, `password`, `secret`, `uuid`, `url`, `alias`, and `number`.
+The `url` generator replaces the host, credentials, every path segment, query
+values and the fragment; only the scheme, port, segment count and query keys
+remain. Host, domain and email fakes use `example.com`, or a private suffix
+such as `.internal` when the original has one, never a real public domain.
+`mask` shows at most a sixth of a value at each edge (none below six
+characters).
 
 Rules are validated at startup. Invalid selectors, expressions, actions,
 generators, or capture groups prevent Cover from starting. Detector errors,

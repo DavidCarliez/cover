@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -216,7 +217,7 @@ func TestNamedCaptureAndActions(t *testing.T) {
 	if !strings.HasPrefix(got, "password=") || strings.Contains(got, "Secret123") {
 		t.Errorf("named capture failed: %q", got)
 	}
-	if !strings.Contains(got, "AC**") || !strings.Contains(got, "[REDACTED]") {
+	if !strings.Contains(got, "A*********6") || !strings.Contains(got, "[REDACTED]") {
 		t.Errorf("mask/redact failed: %q", got)
 	}
 	if !strings.Contains(got, "PUBLIC-DEMO") {
@@ -573,5 +574,63 @@ func TestAllowedSubspanDoesNotExposeEmail(t *testing.T) {
 	}
 	if !strings.HasSuffix(out, "visit corp.example.com") {
 		t.Fatalf("standalone allowed domain changed: %q", out)
+	}
+}
+
+func TestURLPseudonymReplacesCredentialsPathQueryAndFragment(t *testing.T) {
+	const original = "https://admin:S3cretPw@db.corp.internal:5432/customers/48213377/invoices?api_key=ABCDEF123456&page=2#token=xyz"
+	fake, err := generateReplacement(make([]byte, 32), "url", original, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{"admin", "S3cretPw", "db.corp", "customers", "48213377", "invoices", "ABCDEF123456", "token=xyz"} {
+		if strings.Contains(fake, private) {
+			t.Fatalf("fake URL %q keeps %q", fake, private)
+		}
+	}
+	u, err := url.Parse(fake)
+	if err != nil || u.Scheme != "https" || u.Port() != "5432" || strings.Count(u.Path, "/") != 3 ||
+		!u.Query().Has("api_key") || !u.Query().Has("page") || !strings.HasSuffix(u.Hostname(), ".example.internal") {
+		t.Fatalf("fake URL lost its shape: %q (%v)", fake, err)
+	}
+	again, _ := generateReplacement(make([]byte, 32), "url", original, 0)
+	if again != fake {
+		t.Fatalf("URL pseudonym is not deterministic: %q != %q", again, fake)
+	}
+}
+
+func TestPseudonymSpacesDoNotExhaustQuickly(t *testing.T) {
+	r := New(NewStoreWithOptions(StoreOptions{MaxEntriesPerSession: 5000}), 0, RedactorOptions{FieldRules: []FieldRule{
+		{Name: "host", Keys: []string{"host"}, Action: string(ActionPseudonymize), Generator: "hostname", Priority: 1},
+		{Name: "user", Keys: []string{"user"}, Action: string(ActionPseudonymize), Generator: "username", Priority: 1},
+		{Name: "mail", Keys: []string{"mail"}, Action: string(ActionPseudonymize), Generator: "email", Priority: 1},
+	}})
+	items := make([]any, 0, 1000)
+	for i := range 1000 {
+		items = append(items, map[string]any{
+			"host": fmt.Sprintf("prod-db-%d", i), "user": fmt.Sprintf("j.doe%d", i),
+			"mail": fmt.Sprintf("person%d@bank.de", i),
+		})
+	}
+	body, _ := json.Marshal(map[string]any{"items": items})
+	result, err := r.Transform(body, "s", false, "allow")
+	if err != nil {
+		t.Fatalf("1000 distinct values exhausted a pseudonym space: %v", err)
+	}
+	if strings.Contains(string(result.Body), "bank.de") || strings.Contains(string(result.Body), "example.de") {
+		t.Fatalf("email fake kept a public suffix: %.300s", result.Body)
+	}
+}
+
+func TestMaskRevealsAtMostASixth(t *testing.T) {
+	for value, want := range map[string]string{
+		"12345":            "*****",
+		"123456":           "1****6",
+		"ACCT-123456":      "A*********6",
+		"sk-abcdefghijklm": "sk************lm",
+	} {
+		if got := maskValue(value); got != want {
+			t.Errorf("maskValue(%q)=%q, want %q", value, got, want)
+		}
 	}
 }
