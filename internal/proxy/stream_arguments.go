@@ -29,7 +29,7 @@ func isJSONArgumentChannel(channel string) bool {
 // can itself contain a curl command, URL, or serialized JSON. Restoring arbitrary
 // fragments cannot determine the required inner quoting or numeric context.
 func (rw *SSERestoringWriter) queueArguments(event *sseFragmentEvent) error {
-	if rw.queuedBytes+int64(len(event.event)) > rw.maxEvent {
+	if rw.queuedBytes+int64(len(event.event)) > rw.maxQueue {
 		return ErrSSEEventTooLarge
 	}
 	for _, field := range event.argumentFields {
@@ -90,10 +90,16 @@ func (rw *SSERestoringWriter) finishArguments(channel string) error {
 		}
 	}
 	arguments := document.String()
-	if strings.TrimSpace(arguments) != "" && !json.Valid([]byte(arguments)) {
-		return errSSEArguments
+	var restored string
+	if strings.TrimSpace(arguments) == "" || json.Valid([]byte(arguments)) {
+		restored = strings.TrimSpace(string(rw.redactor.RestoreResponseForSession([]byte(arguments), "application/json", rw.session)))
+	} else {
+		// Arguments cut short, for example by max_tokens, cannot be restored
+		// as a document. Restore whole replacements as text and pass the
+		// incomplete arguments on, so the client sees the provider's stop
+		// reason instead of a broken stream.
+		restored = strings.TrimSpace(string(rw.redactor.RestoreForSession([]byte(arguments), rw.session)))
 	}
-	restored := strings.TrimSpace(string(rw.redactor.RestoreResponseForSession([]byte(arguments), "application/json", rw.session)))
 	delete(rw.arguments, channel)
 	nonspace := 0
 	for _, value := range restored {

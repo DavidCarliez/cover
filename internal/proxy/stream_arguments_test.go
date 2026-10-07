@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/DavidCarliez/cover/internal/redact"
@@ -119,23 +120,31 @@ func TestSSEInterleavedToolArgumentsRestoreNestedJSONAndPreserveRouting(t *testi
 	}
 }
 
-func TestSSEArgumentsRejectTruncationAndCumulativeOverflow(t *testing.T) {
+func TestSSEArgumentsPassTruncationAndBoundCumulativeOverflow(t *testing.T) {
 	r, fake := aliasPseudonym(t, "bounds")
 	t.Run("truncated", func(t *testing.T) {
+		// Arguments cut short, for example by max_tokens, pass through with
+		// whole replacements restored so the client sees the stop reason.
 		var output bytes.Buffer
 		writer := NewSSERestoringWriterForSession(&output, r, "bounds")
 		if _, err := writer.Write([]byte(chatToolDeltaEvent(`{"value":"`+fake, 0, 0))); err != nil {
 			t.Fatal(err)
 		}
-		if err := writer.Close(); !errors.Is(err, errSSEArguments) || output.Len() != 0 {
-			t.Fatalf("incomplete arguments were emitted: err=%v output=%s", err, output.Bytes())
+		if _, err := writer.Write([]byte(`data: {"choices":[{"index":0,"delta":{},"finish_reason":"length"}]}` + "\n\n")); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("truncated arguments aborted the stream: %v", err)
+		}
+		if !strings.Contains(output.String(), `{\"value\":\"CUSTOMER-ALPHA"`) || !strings.Contains(output.String(), `"finish_reason":"length"`) {
+			t.Fatalf("truncated arguments were not passed on restored: %s", output.Bytes())
 		}
 	})
 	t.Run("cumulative limit", func(t *testing.T) {
 		var output bytes.Buffer
-		writer := NewSSERestoringWriterForSessionWithLimit(&output, r, "bounds", 512)
+		writer := NewSSERestoringWriterWithLimits(&output, r, "bounds", 512, 1024)
 		var err error
-		for range 10 {
+		for range 20 {
 			_, err = writer.Write([]byte(chatToolDeltaEvent(strings.Repeat("x", 80), 0, 0)))
 			if err != nil {
 				break
@@ -439,4 +448,63 @@ func TestSSEArgumentsPreserveInterleavedCompletionOrder(t *testing.T) {
 			t.Fatalf("arguments crossed channels for %s: %q (%v)", id, arguments[id], err)
 		}
 	}
+}
+
+func TestSSELargeToolCallUsesQueueLimit(t *testing.T) {
+	r, fake := aliasPseudonym(t, "large")
+	var output bytes.Buffer
+	// Each event fits the per-event limit while the whole call exceeds it.
+	writer := NewSSERestoringWriterWithLimits(&output, r, "large", 4096, 1<<20)
+	if _, err := writer.Write([]byte(chatToolDeltaEvent(`{"value":"`+fake+`","content":"`, 0, 0))); err != nil {
+		t.Fatal(err)
+	}
+	for range 200 {
+		if _, err := writer.Write([]byte(chatToolDeltaEvent(strings.Repeat("y", 100), 0, 0))); err != nil {
+			t.Fatalf("large tool call aborted: %v", err)
+		}
+	}
+	if _, err := writer.Write([]byte(chatToolDeltaEvent(`"}`, 0, 0) + `data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}` + "\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "CUSTOMER-ALPHA") || strings.Contains(output.String(), fake) {
+		t.Fatalf("large tool call was not restored")
+	}
+}
+
+func TestSSEPingsAndKeepalivesPassHeldEvents(t *testing.T) {
+	r, fake := aliasPseudonym(t, "keepalive")
+	var output bytes.Buffer
+	writer := NewSSERestoringWriterForSession(&output, r, "keepalive")
+	now := time.Unix(0, 0)
+	writer.now = func() time.Time { return now }
+	writer.lastEmit = now
+	start := anthropicToolDeltaEvent(`{"value":"`+fake, 1)
+	if _, err := writer.Write([]byte(start)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := writer.Write([]byte("event: ping\ndata: {\"type\": \"ping\"}\n\n")); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != "event: ping\ndata: {\"type\": \"ping\"}\n\n" {
+		t.Fatalf("ping did not pass held arguments: %q", output.String())
+	}
+	output.Reset()
+	now = now.Add(11 * time.Second)
+	if _, err := writer.Write([]byte(anthropicToolDeltaEvent(`"}`, 1))); err != nil {
+		t.Fatal(err)
+	}
+	if output.String() != ": cover keepalive\n\n" {
+		t.Fatalf("no keepalive while arguments were held: %q", output.String())
+	}
+}
+
+func anthropicToolDeltaEvent(partial string, index int) string {
+	payload, _ := json.Marshal(map[string]any{
+		"type": "content_block_delta", "index": index,
+		"delta": map[string]any{"type": "input_json_delta", "partial_json": partial},
+	})
+	return fmt.Sprintf("event: content_block_delta\ndata: %s\n\n", payload)
 }

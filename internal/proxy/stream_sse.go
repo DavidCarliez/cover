@@ -9,11 +9,17 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/DavidCarliez/cover/internal/redact"
 )
 
-const defaultSSEEventLimit = int64(4 << 20)
+const (
+	defaultSSEEventLimit = int64(4 << 20)
+	// sseKeepaliveInterval paces comment lines while restoration holds
+	// events back, so clients and intermediaries do not time out.
+	sseKeepaliveInterval = 10 * time.Second
+)
 
 var ErrSSEEventTooLarge = errors.New("SSE event exceeds configured limit")
 
@@ -30,6 +36,9 @@ type SSERestoringWriter struct {
 	queuedBytes int64
 	arguments   map[string]*sseArgumentBuffer
 	maxEvent    int64
+	maxQueue    int64
+	lastEmit    time.Time
+	now         func() time.Time
 }
 
 // A channel retains its last delta until the next fragment or its end event.
@@ -58,11 +67,21 @@ func NewSSERestoringWriterForSession(w io.Writer, redactor *redact.Redactor, ses
 }
 
 func NewSSERestoringWriterForSessionWithLimit(w io.Writer, redactor *redact.Redactor, session string, maxEvent int64) *SSERestoringWriter {
+	return NewSSERestoringWriterWithLimits(w, redactor, session, maxEvent, maxEvent)
+}
+
+// NewSSERestoringWriterWithLimits bounds each event by maxEvent and the events
+// held back for restoration, such as a long streamed tool call, by maxQueue.
+func NewSSERestoringWriterWithLimits(w io.Writer, redactor *redact.Redactor, session string, maxEvent, maxQueue int64) *SSERestoringWriter {
 	f, _ := w.(http.Flusher)
 	if maxEvent <= 0 {
 		maxEvent = defaultSSEEventLimit
 	}
-	return &SSERestoringWriter{w: w, flusher: f, redactor: redactor, session: session, maxEvent: maxEvent,
+	if maxQueue < maxEvent {
+		maxQueue = maxEvent
+	}
+	return &SSERestoringWriter{w: w, flusher: f, redactor: redactor, session: session, maxEvent: maxEvent, maxQueue: maxQueue,
+		now: time.Now, lastEmit: time.Now(),
 		pending: make(map[string]*sseFragmentEvent), arguments: make(map[string]*sseArgumentBuffer)}
 }
 
@@ -118,7 +137,8 @@ func (rw *SSERestoringWriter) writeEvent(event []byte) error {
 	}
 	fragment, ok := parseSSEFragmentEvent(event)
 	if !ok {
-		if heartbeatSSEEvent(event) {
+		// Heartbeats carry no content, so they pass held-back events.
+		if heartbeatSSEEvent(event) || pingSSEEvent(event) {
 			return rw.emit(event)
 		}
 		if err := rw.finishChannels(event); err != nil {
@@ -212,6 +232,25 @@ func (rw *SSERestoringWriter) finishChannels(event []byte) error {
 	return rw.drain()
 }
 
+// pingSSEEvent recognizes Anthropic's ping, which carries no content.
+func pingSSEEvent(event []byte) bool {
+	data := false
+	for _, line := range strings.Split(strings.ReplaceAll(string(event), "\r", "\n"), "\n") {
+		switch {
+		case line == "", strings.HasPrefix(line, ":"), line == "event: ping", line == "event:ping":
+		case strings.HasPrefix(line, "data:"):
+			var payload map[string]any
+			if json.Unmarshal([]byte(strings.TrimSpace(line[5:])), &payload) != nil || payload["type"] != "ping" || len(payload) != 1 {
+				return false
+			}
+			data = true
+		default:
+			return false
+		}
+	}
+	return data
+}
+
 func heartbeatSSEEvent(event []byte) bool {
 	for _, line := range strings.Split(strings.ReplaceAll(string(event), "\r", "\n"), "\n") {
 		if line != "" && !strings.HasPrefix(line, ":") {
@@ -233,8 +272,11 @@ func (rw *SSERestoringWriter) drain() error {
 		rw.queue[0] = nil
 		rw.queue = rw.queue[1:]
 	}
-	if rw.queuedBytes > rw.maxEvent || len(rw.pending)+len(rw.arguments) > 128 {
+	if rw.queuedBytes > rw.maxQueue || len(rw.pending)+len(rw.arguments) > 128 {
 		return ErrSSEEventTooLarge
+	}
+	if len(rw.queue) > 0 && rw.now().Sub(rw.lastEmit) >= sseKeepaliveInterval {
+		return rw.emit([]byte(": cover keepalive\n\n"))
 	}
 	return nil
 }
@@ -266,6 +308,7 @@ func (rw *SSERestoringWriter) emit(data []byte) error {
 	if _, err := rw.w.Write(data); err != nil {
 		return err
 	}
+	rw.lastEmit = rw.now()
 	if rw.flusher != nil {
 		rw.flusher.Flush()
 	}

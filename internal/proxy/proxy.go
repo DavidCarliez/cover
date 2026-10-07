@@ -245,7 +245,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		counted := &countingWriter{w: w}
 		if sse {
-			rw = NewSSERestoringWriterForSessionWithLimit(counted, p.redactor, session, p.options.MaxSSEEventBytes)
+			rw = NewSSERestoringWriterWithLimits(counted, p.redactor, session, p.options.MaxSSEEventBytes, p.options.MaxResponseBytes)
 		} else {
 			rw = NewRestoringWriterForSession(counted, p.redactor, session)
 		}

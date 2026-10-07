@@ -363,9 +363,13 @@ then restored with the correct nested JSON, URL and shell escaping. Restored
 arguments are split at UTF-8 boundaries. Redundant argument-only events are
 removed when restoration shortens the document, rather than emitting long runs
 of empty deltas. Tool identity, mixed content and lifecycle events are retained.
-The `limits.sse_event_bytes` budget bounds queued argument events across
-interleaved tools. Incomplete arguments abort the stream. Ordinary text
-deltas and heartbeat comments continue to stream.
+`limits.sse_event_bytes` bounds each event, and `limits.response_bytes` bounds
+the events held back while arguments are buffered, so large tool calls such as
+a file write stream normally. Arguments cut short, for example by
+`max_tokens`, are passed on with whole replacements restored, so the client
+sees the provider's stop reason. Ordinary text deltas, heartbeat comments and
+Anthropic `ping` events continue to stream; while events are held back, Cover
+also sends an SSE comment every 10 seconds so clients do not time out.
 
 ### Selected names in plain text
 
