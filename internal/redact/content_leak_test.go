@@ -231,3 +231,28 @@ func TestSelectedHTMLFieldsAndMultipartPartsInUnparsedText(t *testing.T) {
 		t.Fatalf("unselected fields changed: %v %s", err, result.Body)
 	}
 }
+
+func TestMalformedStructuredTextIsProtectedNotRejected(t *testing.T) {
+	for name, tc := range map[string]struct {
+		rule FieldRule
+		text string
+	}{
+		"NDJSON":                 {keyAliasRule("password"), "{\"user\":\"a\"}\n{\"password\":\"" + leakMarker + "\"}\n{\"user\":\"b\"}\n"},
+		"two documents":          {keyAliasRule("password"), "{\"a\":1} {\"password\":\"" + leakMarker + "\"}"},
+		"trailing comma":         {keyAliasRule("password"), "{\"password\":\"" + leakMarker + "\",}"},
+		"literal percent in URL": {queryAliasRule("token"), "https://x.example/?progress=50%&token=" + leakMarker},
+		"literal percent form":   {formAliasRule("password"), "progress=50%&password=" + leakMarker},
+		"malformed escape":       {queryAliasRule("token"), "token=" + leakMarker + "%ZZ"},
+		"data attribute":         {keyAliasRule("password"), `<div data-password="` + leakMarker + `"></div>`},
+		"malformed curl JSON":    {keyAliasRule("password"), "curl https://x.example --data '{\"password\":\"" + leakMarker + "\"'"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertContentProtected(t, structuredPolicyRedactor(tc.rule), tc.text)
+		})
+	}
+	r := structuredPolicyRedactor(keyAliasRule("password"))
+	body, _ := json.Marshal(map[string]string{"input": `<script type="application/json"></script><p>ok</p>`})
+	if _, err := r.Transform(body, "s", false, "allow"); err != nil {
+		t.Fatalf("empty JSON script rejected: %v", err)
+	}
+}

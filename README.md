@@ -342,10 +342,15 @@ recognized HTTP/curl values, URL path segments and prose.
 Selected numbers require `allow`, `block`, or `pseudonymize` with `number`.
 Selected booleans require `allow` or `block`; null stays null.
 
-Malformed recognizable JSON with a selected key is rejected, not forwarded.
+Malformed recognizable JSON, NDJSON and JSON-like source with a selected key
+are not rejected when every selected value is a scalar: those values are
+protected as plain-text assignments. Malformed JSON that gives a selected key
+an object, an array or an unterminated string is rejected, not forwarded.
 Malformed HTTP framing, unsupported encoded/chunked wire bodies, and exhausted
-parser budgets also fail closed. Ordinary prose and source code are not treated
-as malformed JSON merely because they mention a protected key.
+parser budgets also fail closed. A standalone URL or form with a literal `%`,
+such as `?progress=50%`, is scanned as plain text. HTML `data-` attributes
+use the `keys` rule for the rest of their name, so `data-password` is
+selected by `password`.
 
 Parsing budgets are 64 structural levels, 100,000 nodes, eight embedded parsing
 levels and 4 MiB of decoded JSON/HTML per request. Each HTML document also has

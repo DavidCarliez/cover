@@ -241,16 +241,33 @@ func TestSelectedNonStringPoliciesFailClosedOrBlockExplicitly(t *testing.T) {
 
 func TestMalformedRecognizedEmbeddedJSONFailsClosedWithoutRejectingSource(t *testing.T) {
 	r := structuredPolicyRedactor(aliasKeyRule("password", "password"))
-	malformed := []string{
+	// A selected scalar in malformed JSON is protected as a plain-text
+	// assignment; a selected container or unterminated string needs the
+	// parser, so the request is rejected.
+	scalars := []string{
 		`{"password":"CUSTOMER-ALPHA"`,
 		"```json\n{\"password\":\"CUSTOMER-ALPHA\"",
 		"Command output:\n{\"password\":\"CUSTOMER-ALPHA\"",
 		"curl https://example.com --data '{\"password\":\"CUSTOMER-ALPHA\"'",
+		"{\"a\":1}\n{\"password\":\"CUSTOMER-ALPHA\"}\n",
+		`{"password":"CUSTOMER-ALPHA",}`,
 	}
-	for i, text := range malformed {
+	for i, text := range scalars {
 		body, _ := json.Marshal(map[string]string{"content": text})
-		if _, err := r.Transform(body, fmt.Sprintf("malformed-%d", i), false, "allow"); !errors.Is(err, ErrUnsafeRequest) {
-			t.Fatalf("fixture %d error=%v", i, err)
+		result, err := r.Transform(body, fmt.Sprintf("scalar-%d", i), false, "allow")
+		if err != nil || bytes.Contains(result.Body, []byte("CUSTOMER-ALPHA")) {
+			t.Fatalf("scalar fixture %d: %v %s", i, err, result.Body)
+		}
+	}
+	containers := []string{
+		`{"password":{"value":"CUSTOMER-ALPHA"}`,
+		`{"password":["CUSTOMER-ALPHA"`,
+		`{"password":"CUSTOMER-ALPHA`,
+	}
+	for i, text := range containers {
+		body, _ := json.Marshal(map[string]string{"content": text})
+		if _, err := r.Transform(body, fmt.Sprintf("container-%d", i), false, "allow"); !errors.Is(err, ErrUnsafeRequest) {
+			t.Fatalf("container fixture %d error=%v", i, err)
 		}
 	}
 

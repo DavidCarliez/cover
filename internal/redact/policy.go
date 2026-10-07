@@ -565,7 +565,7 @@ func (r *Redactor) transformEmbeddedString(
 		return "", false, nil
 	}
 	if status == embeddedJSONMalformed {
-		if r.containsSelectedJSONField(embeddedCandidateInspectionText(text, candidate)) {
+		if r.selectedJSONFieldNeedsParser(embeddedCandidateInspectionText(text, candidate)) {
 			return "", true, fmt.Errorf("%w: malformed selected embedded JSON", ErrUnsafeRequest)
 		}
 		return "", false, nil

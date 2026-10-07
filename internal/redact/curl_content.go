@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"encoding/json"
 	"errors"
 	"mime"
 	"strings"
@@ -120,6 +121,11 @@ func transformCurlCommand(text string, left, right int, policy httpContentPolicy
 			if strings.HasPrefix(trimmed, "@") && option != "--data-raw" {
 				transformed, err = callHTTPBody(policy.Text, value)
 			} else if option == "--json" || isJSONMediaType(mediaType) || strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
+				if !json.Valid([]byte(value)) {
+					// Malformed JSON data is judged by the embedded JSON and
+					// plain-text pipeline, which rejects only what it cannot protect.
+					return "", errCurlUnsupported
+				}
 				transformed, err = transformHTTPBody(value, "application/json", policy)
 			} else if mediaType == "text/html" || mediaType == "application/xhtml+xml" || strings.HasPrefix(trimmed, "<") {
 				transformed, err = transformHTTPBody(value, "text/html", policy)

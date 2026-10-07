@@ -1218,7 +1218,9 @@ func protectStandaloneURL(text string, policy httpContentPolicy) (string, bool, 
 	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
 		return text, false, nil
 	}
-	if !strings.Contains(candidate, "?") {
+	// A literal % such as ?progress=50% is not a parseable query; the
+	// plain-text pipeline protects its assignments instead.
+	if !strings.Contains(candidate, "?") || !validPercentEscapes(candidate) {
 		return text, false, nil
 	}
 	parsed, err := url.Parse(candidate)
@@ -1239,7 +1241,7 @@ func protectStandaloneForm(text string, policy httpContentPolicy) (string, bool,
 		return text, false, nil
 	}
 	candidate := text[start:end]
-	if !looksLikeStandaloneForm(candidate) {
+	if !looksLikeStandaloneForm(candidate) || !validPercentEscapes(candidate) {
 		return text, false, nil
 	}
 	transformed, _, err := transformParameterString(candidate, selectorFormFields, policy, true)

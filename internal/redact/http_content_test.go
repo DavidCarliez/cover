@@ -376,11 +376,6 @@ func TestProtectHTTPContentFailsClosedWithoutSecretErrors(t *testing.T) {
 				},
 			},
 		},
-		{
-			name:   "standalone malformed escape",
-			input:  queryName + "=%ZZ",
-			policy: basePolicy,
-		},
 	}
 
 	for _, test := range tests {

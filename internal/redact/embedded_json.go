@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -443,7 +444,12 @@ func resultPrefix(prefix string) bool {
 	}
 }
 
-func (r *Redactor) containsSelectedJSONField(text string) bool {
+// selectedJSONFieldNeedsParser reports whether malformed JSON text gives a
+// selected key a value that the plain-text selector net cannot protect: an
+// object, an array, or a string that does not end on its line. Scalar values
+// of selected keys in malformed JSON, NDJSON or JSON-like source are
+// protected as plain-text assignments instead of rejecting the request.
+func (r *Redactor) selectedJSONFieldNeedsParser(text string) bool {
 	if !r.hasKeyRules {
 		return false
 	}
@@ -481,14 +487,32 @@ func (r *Redactor) containsSelectedJSONField(text string) bool {
 			continue
 		}
 		name, err := strconv.Unquote(text[start : i+1])
-		if err == nil {
-			if _, matched := r.fieldRule(selectorKeys, name); matched {
+		if err != nil {
+			continue
+		}
+		if _, matched := r.fieldRule(selectorKeys, name); !matched {
+			continue
+		}
+		j++
+		for j < len(text) && (text[j] == ' ' || text[j] == '\t' || text[j] == '\r' || text[j] == '\n') {
+			j++
+		}
+		if j >= len(text) {
+			continue
+		}
+		switch text[j] {
+		case '{', '[':
+			return true
+		case '"':
+			if !textAssignmentQuoted.MatchString(text[j:]) {
 				return true
 			}
 		}
 	}
 	return false
 }
+
+var textAssignmentQuoted = regexp.MustCompile(`^"(?:[^"\\\r\n]|\\.)*"`)
 
 type protocolObjectKind uint8
 

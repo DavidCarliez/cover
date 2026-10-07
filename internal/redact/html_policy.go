@@ -89,6 +89,12 @@ func (r *Redactor) transformHTMLString(ctx context.Context, text, session string
 			if rule, ok := r.fieldRule(selectorKeys, name); ok {
 				return r.transformSelectedString(value, session, occupied, result, changed, rule, capture)
 			}
+			// data-password carries the same field as a password key.
+			if len(name) > 5 && strings.EqualFold(name[:5], "data-") {
+				if rule, ok := r.fieldRule(selectorKeys, name[5:]); ok {
+					return r.transformSelectedString(value, session, occupied, result, changed, rule, capture)
+				}
+			}
 			if strings.EqualFold(name, "srcdoc") {
 				output, _, err := r.transformHTMLString(ctx, value, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth+1, true)
 				return output, err

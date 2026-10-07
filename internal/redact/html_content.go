@@ -604,7 +604,9 @@ func transformHTMLDocument(text string, policy htmlContentPolicy, budget *htmlIn
 			nodes := htmlTextNodes(node)
 			before := joinHTMLNodes(nodes)
 			value := before
-			if node.Data == "script" && jsonScripts[node] && policy.JSON != nil {
+			if node.Data == "script" && jsonScripts[node] && policy.JSON != nil && strings.TrimSpace(before) == "" {
+				// An empty data block carries nothing to inspect.
+			} else if node.Data == "script" && jsonScripts[node] && policy.JSON != nil {
 				if !json.Valid([]byte(before)) {
 					return unsafeHTMLContentError()
 				}
