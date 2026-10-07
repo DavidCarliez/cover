@@ -320,12 +320,19 @@ These selectors apply to HTTP text inside model-request JSON, such as captured
 tool output. They do not filter the model API connection's own headers, URL
 path, or query string, which Cover preserves for routing and authentication.
 
-Literal curl arguments are inspected too, including `--header`, `--cookie`,
-URLs, JSON/form `--data` variants and `--data-urlencode`. This also protects
+Literal curl arguments are inspected too, including `--header` (also in
+combined flags such as `-sSH`), `--cookie`, URLs, JSON/form `--data` variants,
+`--data-urlencode`, `-F` form fields, `-G` query data, and `-u`/`--oauth2-bearer`
+credentials, which an `Authorization` header rule owns. This also protects
 restored commands when an agent sends its execution history on the next turn.
 Changed arguments are shell-quoted; Cover does not execute shell expressions
-or read `@file` contents. Unsupported shell composition and transformations
-that depend on shell expansion fail closed.
+or read `@file` contents. A command with shell composition such as pipes or
+`;`, or one whose changed argument contains shell expansion, is not
+rewritten as a command: it is scanned as plain text, and values are replaced
+in place.
+
+Detectors also inspect query parameter names, value-less parameters and
+cookie names.
 
 Use `number` for opaque numeric identifiers, not values the model must use in
 calculations. It emits a deterministic signed integer below JavaScript's exact
