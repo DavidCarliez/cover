@@ -136,6 +136,16 @@ func TestCurlCommandsProtectEveryCredentialForm(t *testing.T) {
 		"header without colon": {FieldRule{}, "curl -H 'X-Key " + akia + "' https://x.example", akia},
 		"shell pipeline":       {headerAliasRule("Authorization"), "curl -s -H 'Authorization: Bearer " + leakMarker + "' https://x.example | jq .", leakMarker},
 		"dynamic word":         {headerAliasRule("Authorization"), "curl -H \"Authorization: Bearer " + leakMarker + "\" \"$BASE/x\"", leakMarker},
+		// Commands the curl parser cannot rewrite keep their credentials
+		// protected through the plain-text net.
+		"piped basic auth":       {headerAliasRule("Authorization"), "curl -u admin:" + leakMarker + " https://x.example | jq .", leakMarker},
+		"piped oauth2 bearer":    {headerAliasRule("Authorization"), "curl --oauth2-bearer " + leakMarker + " https://x.example | jq .", leakMarker},
+		"piped attached user":    {headerAliasRule("Authorization"), "curl -uadmin:" + leakMarker + " https://x.example && echo ok", leakMarker},
+		"piped combined flags":   {headerAliasRule("Authorization"), "curl -sSu 'admin:" + leakMarker + "' https://x.example | jq .", leakMarker},
+		"piped long equals form": {headerAliasRule("Authorization"), "curl --user=\"admin:" + leakMarker + "\" https://x.example | jq .", leakMarker},
+		"piped proxy user":       {headerAliasRule("Authorization"), "curl -U proxy:" + leakMarker + " https://x.example | jq .", leakMarker},
+		"script continuation":    {headerAliasRule("Authorization"), "#!/bin/sh\nset -e\ncurl -s \\\n  -u admin:" + leakMarker + " \\\n  https://x.example | jq .\n", leakMarker},
+		"command in prose":       {headerAliasRule("Authorization"), "Run `curl -u admin:" + leakMarker + " https://x.example` to check.", leakMarker},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var rules []FieldRule
@@ -166,6 +176,8 @@ func TestCurlProseAndShellCompositionAreNotRejected(t *testing.T) {
 		"curl -s https://api.example.com/items | jq .",
 		"curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0",
 		"curl -X POST \"$API_URL\" && echo done",
+		"curl -u \"$API_USER:$API_PASS\" https://api.example.com | jq .",
+		"mysql -u root -p; curl -s https://api.example.com | jq .",
 	} {
 		body, _ := json.Marshal(map[string]string{"input": text})
 		result, err := r.Transform(body, "s", false, "allow")

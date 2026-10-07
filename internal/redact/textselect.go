@@ -23,6 +23,9 @@ type textSelector struct {
 	literals []string
 	names    map[string]bool // lowercase names for HTML field identities
 	part     *regexp.Regexp  // multipart form-data part with a selected name
+	// credentials marks an Authorization selector, which also owns curl
+	// credential options because curl sends them as that header.
+	credentials bool
 }
 
 var (
@@ -85,6 +88,11 @@ func buildTextSelectors(rules []FieldRule) []textSelector {
 			pattern = flags + `(?:^|[^A-Za-z0-9_.])["']?` + alternatives + `["']?[ \t]*[:=][ \t]*` + textAssignmentValue
 		}
 		selector.re = regexp.MustCompile(pattern)
+		if header {
+			for _, name := range names {
+				selector.credentials = selector.credentials || strings.EqualFold(name, "Authorization")
+			}
+		}
 		if len(rule.Keys) > 0 || len(rule.FormFields) > 0 {
 			selector.names = map[string]bool{}
 			for _, name := range names {
@@ -99,10 +107,26 @@ func buildTextSelectors(rules []FieldRule) []textSelector {
 }
 
 func (r *Redactor) textSelectorMatches(text string) []detectors.Match {
-	if len(r.textSelectors) == 0 || !strings.ContainsAny(text, ":=") {
+	if len(r.textSelectors) == 0 {
 		return nil
 	}
 	var matches []detectors.Match
+	var credentials [][2]int
+	credentialsScanned := false
+	for _, selector := range r.textSelectors {
+		if !selector.credentials {
+			continue
+		}
+		if !credentialsScanned {
+			credentials, credentialsScanned = curlCredentialValues(text), true
+		}
+		for _, span := range credentials {
+			matches = append(matches, selector.match(text, span[0], span[1]))
+		}
+	}
+	if !strings.ContainsAny(text, ":=") {
+		return matches
+	}
 	var fieldTags [][]int
 	if strings.Contains(text, "<") {
 		fieldTags = textHTMLFieldTag.FindAllStringIndex(text, -1)
@@ -152,6 +176,123 @@ func (r *Redactor) textSelectorMatches(text string) []detectors.Match {
 		}
 	}
 	return matches
+}
+
+// curlCredentialValues returns the values of curl credential options in
+// text: -u, --user, -U, --proxy-user and --oauth2-bearer, including attached
+// and combined short forms. The curl parser handles commands it can rewrite;
+// this covers the rest, such as a command piped to jq, a script or a command
+// quoted in prose. Shell variables are left alone.
+func curlCredentialValues(text string) [][2]int {
+	var spans [][2]int
+	for from := 0; ; {
+		at := strings.Index(text[from:], "curl")
+		if at < 0 {
+			return spans
+		}
+		at += from
+		from = at + len("curl")
+		if at > 0 && isCurlWordByte(text[at-1]) || from < len(text) && isCurlWordByte(text[from]) {
+			continue
+		}
+		words := lenientShellWords(text, from)
+		for i := 0; i < len(words); i++ {
+			word := text[words[i][0]:words[i][1]]
+			value := [2]int{-1, -1}
+			switch {
+			case word == "-u" || word == "--user" || word == "-U" || word == "--proxy-user" || word == "--oauth2-bearer":
+				if i+1 < len(words) {
+					i++
+					value = words[i]
+				}
+			case strings.HasPrefix(word, "--user=") || strings.HasPrefix(word, "--proxy-user=") || strings.HasPrefix(word, "--oauth2-bearer="):
+				value = [2]int{words[i][0] + strings.IndexByte(word, '=') + 1, words[i][1]}
+			case len(word) > 2 && word[0] == '-' && word[1] != '-':
+				// -uuser:pass, or flags ending in u such as -sSu user:pass.
+				if word[1] == 'u' || word[1] == 'U' {
+					value = [2]int{words[i][0] + 2, words[i][1]}
+					break
+				}
+				last := word[len(word)-1]
+				flags := last == 'u' || last == 'U'
+				for j := 1; flags && j < len(word)-1; j++ {
+					flags = strings.IndexByte(curlFlagOptions, word[j]) >= 0
+				}
+				if flags && i+1 < len(words) {
+					i++
+					value = words[i]
+				}
+			}
+			if value[0] < 0 || value[1] <= value[0] {
+				continue
+			}
+			// Protect the inside of a fully quoted word.
+			if raw := text[value[0]:value[1]]; len(raw) >= 2 && (raw[0] == '\'' || raw[0] == '"') && raw[len(raw)-1] == raw[0] {
+				value[0], value[1] = value[0]+1, value[1]-1
+			}
+			if value[1] > value[0] && text[value[0]] != '$' {
+				spans = append(spans, value)
+			}
+		}
+		if len(words) > 0 {
+			from = max(from, words[len(words)-1][1])
+		}
+	}
+}
+
+func isCurlWordByte(c byte) bool {
+	return c == '_' || c == '-' || c == '.' || c == '/' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9'
+}
+
+// lenientShellWords splits one shell command starting at from into word
+// spans, honouring quotes and backslash line continuations. It stops at the
+// end of the line or at an unquoted command separator.
+func lenientShellWords(text string, from int) [][2]int {
+	var words [][2]int
+	start, quote := -1, byte(0)
+	for i := from; i < len(text); i++ {
+		c := text[i]
+		switch {
+		case quote != 0:
+			if c == '\\' && quote == '"' && i+1 < len(text) {
+				i++
+			} else if c == quote {
+				quote = 0
+			}
+			continue
+		case c == '\\' && i+1 < len(text) && (text[i+1] == '\n' || text[i+1] == '\r'):
+			if start >= 0 {
+				words, start = append(words, [2]int{start, i}), -1
+			}
+			i++
+			if text[i] == '\r' && i+1 < len(text) && text[i+1] == '\n' {
+				i++
+			}
+			continue
+		case c == ' ' || c == '\t':
+			if start >= 0 {
+				words, start = append(words, [2]int{start, i}), -1
+			}
+			continue
+		case c == '\n' || c == '\r' || c == '|' || c == ';' || c == '&' || c == ')' || c == '`':
+			if start >= 0 {
+				words = append(words, [2]int{start, i})
+			}
+			return words
+		}
+		if start < 0 {
+			start = i
+		}
+		if c == '\'' || c == '"' {
+			quote = c
+		} else if c == '\\' && i+1 < len(text) {
+			i++
+		}
+	}
+	if start >= 0 {
+		words = append(words, [2]int{start, len(text)})
+	}
+	return words
 }
 
 // mentioningLines returns runs of consecutive lines that mention a name.

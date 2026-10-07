@@ -338,7 +338,9 @@ Changed arguments are shell-quoted; Cover does not execute shell expressions
 or read `@file` contents. A command with shell composition such as pipes or
 `;`, or one whose changed argument contains shell expansion, is not
 rewritten as a command: it is scanned as plain text, and values are replaced
-in place.
+in place. An `Authorization` rule still protects `-u`, `--user`, `-U`,
+`--proxy-user` and `--oauth2-bearer` values there, and in curl commands
+anywhere in text, such as scripts and prose; shell variables stay unchanged.
 
 Detectors also inspect query parameter names, value-less parameters and
 cookie names.
