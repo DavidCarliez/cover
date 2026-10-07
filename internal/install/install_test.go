@@ -249,3 +249,30 @@ func TestInstallKeepsConfiguredUpstream(t *testing.T) {
 		t.Fatalf("explicit upstream was not applied with comments kept: %s", data)
 	}
 }
+
+func TestConfigureAgentSettingsDoesNotPrintOldCredentials(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	path, err := claudeSettingsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := `{"env":{"ANTHROPIC_BASE_URL":"https://user:hunter2hunter2@gateway.example/v1?key=sk-secret-value"}}`
+	if err := os.WriteFile(path, []byte(old), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	if err := configureAgentSettings(&out, "127.0.0.1:8317", []Agent{AgentClaude}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "https://gateway.example") {
+		t.Fatalf("note does not name the old origin: %q", out.String())
+	}
+	for _, secret := range []string{"hunter2hunter2", "sk-secret-value", "user:"} {
+		if strings.Contains(out.String(), secret) {
+			t.Fatalf("note printed %q: %q", secret, out.String())
+		}
+	}
+}

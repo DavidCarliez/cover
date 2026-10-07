@@ -25,7 +25,8 @@ func configureAgentSettings(out io.Writer, listen string, agents []Agent) error 
 			return fmt.Errorf("claude settings: %w", err)
 		}
 		if old := previous["ANTHROPIC_BASE_URL"]; old != "" && old != baseHTTP {
-			fmt.Fprintf(out, "Note: replaced ANTHROPIC_BASE_URL %s in %s; the previous file is saved as %s.\n", old, path, path+settingsBackupSuffix)
+			// The old URL may embed credentials, so only its origin is shown.
+			fmt.Fprintf(out, "Note: replaced ANTHROPIC_BASE_URL %s in %s; the previous file is saved as %s.\n", redactedUpstream(old), path, path+settingsBackupSuffix)
 		}
 	}
 	return nil
