@@ -81,9 +81,17 @@ type knownValue struct {
 // and requests, so the same value is protected again wherever it reappears:
 // in prose after response restoration, in a compacted summary, or in another
 // field of the same request. Entries live only in process memory.
+//
+// Matching uses a large base matcher, rebuilt only after many additions or
+// any removal, and a small matcher for values added since, so adding values
+// does not rebuild a matcher over every remembered value.
 type knownValues struct {
 	mu       sync.RWMutex
 	values   map[string]*knownValue
+	base     *knownMatcher
+	pending  []string
+	delta    *knownMatcher
+	rebase   bool
 	snapshot *knownSnapshot
 	max      int
 	ttl      time.Duration
@@ -93,10 +101,15 @@ type knownValues struct {
 	expired time.Time
 }
 
-type knownSnapshot struct {
+type knownMatcher struct {
 	matcher   *literalMatcher
 	templates []detectors.Match
 	numbers   map[string]detectors.Match
+}
+
+// knownSnapshot is immutable; a transform pass uses one snapshot throughout.
+type knownSnapshot struct {
+	parts []*knownMatcher
 }
 
 func newKnownValues(max int, ttl time.Duration, now func() time.Time) *knownValues {
@@ -127,7 +140,11 @@ func (k *knownValues) remember(original string, template detectors.Match) bool {
 		k.evictOldestLocked(len(k.values) - k.max + 1 + k.max/10)
 	}
 	k.values[original] = &knownValue{template: template, seen: now}
-	k.snapshot = nil
+	k.pending = append(k.pending, original)
+	k.delta, k.snapshot = nil, nil
+	if len(k.pending) > max(512, len(k.values)/4) {
+		k.rebase = true
+	}
 	return true
 }
 
@@ -139,7 +156,7 @@ func (k *knownValues) expireLocked(now time.Time) {
 	for original, value := range k.values {
 		if now.Sub(value.seen) > k.ttl {
 			delete(k.values, original)
-			k.snapshot = nil
+			k.rebase, k.snapshot = true, nil
 		}
 	}
 }
@@ -157,7 +174,7 @@ func (k *knownValues) evictOldestLocked(n int) {
 	for i := 0; i < n && i < len(all); i++ {
 		delete(k.values, all[i].original)
 	}
-	k.snapshot = nil
+	k.rebase, k.snapshot = true, nil
 }
 
 func (k *knownValues) current() *knownSnapshot {
@@ -176,14 +193,37 @@ func (k *knownValues) current() *knownSnapshot {
 	}
 	k.expireLocked(k.now())
 	if len(k.values) == 0 {
+		k.base, k.delta, k.pending, k.rebase = nil, nil, nil, false
 		return nil
 	}
+	if k.base == nil || k.rebase {
+		all := make([]string, 0, len(k.values))
+		for original := range k.values {
+			all = append(all, original)
+		}
+		k.base, k.delta, k.pending, k.rebase = k.buildLocked(all), nil, nil, false
+	}
+	if k.delta == nil && len(k.pending) > 0 {
+		k.delta = k.buildLocked(k.pending)
+	}
+	k.snapshot = &knownSnapshot{parts: []*knownMatcher{k.base}}
+	if k.delta != nil {
+		k.snapshot.parts = append(k.snapshot.parts, k.delta)
+	}
+	return k.snapshot
+}
+
+func (k *knownValues) buildLocked(originals []string) *knownMatcher {
 	var literals []string
 	var templates []detectors.Match
 	var bounded []bool
 	numbers := map[string]detectors.Match{}
 	seen := map[string]bool{}
-	for original, value := range k.values {
+	for _, original := range originals {
+		value, ok := k.values[original]
+		if !ok {
+			continue
+		}
 		// A number inside a longer number is a different number.
 		numeric := isJSONNumberText(original) && json.Valid([]byte(original))
 		for _, encoding := range knownValueEncodings {
@@ -198,18 +238,28 @@ func (k *knownValues) current() *knownSnapshot {
 			templates = append(templates, template)
 			bounded = append(bounded, numeric || len(original) < unboundedKnownValueLen)
 		}
-		if numeric {
-			if len(original) >= minKnownNumberLen {
-				numbers[original] = value.template
-			}
+		if numeric && len(original) >= minKnownNumberLen {
+			numbers[original] = value.template
 		}
 	}
-	k.snapshot = &knownSnapshot{
+	return &knownMatcher{
 		matcher:   newLiteralMatcher(literals, func(i int) bool { return bounded[i] }),
 		templates: templates,
 		numbers:   numbers,
 	}
-	return k.snapshot
+}
+
+// number returns the template of a protected original equal to number.
+func (s *knownSnapshot) number(number string) (detectors.Match, bool) {
+	if s == nil {
+		return detectors.Match{}, false
+	}
+	for _, part := range s.parts {
+		if template, ok := part.numbers[number]; ok {
+			return template, true
+		}
+	}
+	return detectors.Match{}, false
 }
 
 func isJSONNumberText(text string) bool {
@@ -220,21 +270,25 @@ func isJSONNumberText(text string) bool {
 	return first == '-' || first >= '0' && first <= '9'
 }
 
-// matches returns every protected original in text. Their spans are leftmost
-// longest and do not overlap one another.
+// matches returns every protected original in text. Within each part the
+// spans are leftmost longest; overlaps between parts are resolved with all
+// other policy matches.
 func (s *knownSnapshot) matches(text string) []detectors.Match {
 	if s == nil {
 		return nil
 	}
 	var out []detectors.Match
-	for pos := 0; ; {
-		start, end, index, ok := s.matcher.find(text, pos)
-		if !ok {
-			return out
+	for _, part := range s.parts {
+		for pos := 0; ; {
+			start, end, index, ok := part.matcher.find(text, pos)
+			if !ok {
+				break
+			}
+			match := part.templates[index]
+			match.Value, match.Start, match.End = text[start:end], start, end
+			out = append(out, match)
+			pos = end
 		}
-		match := s.templates[index]
-		match.Value, match.Start, match.End = text[start:end], start, end
-		out = append(out, match)
-		pos = end
 	}
+	return out
 }

@@ -137,7 +137,7 @@ func (r *Redactor) transform(body []byte, session string, injectNote bool, media
 	}
 	initial := result
 	changed := false
-	walked, err := r.walkPolicy(ctx, data, session, occupied, &result, &changed, capture, &transformBudget{}, 0, 0, nil, protocolBusiness, "")
+	walked, err := r.walkPolicy(r.withKnownSnapshot(ctx), data, session, occupied, &result, &changed, capture, &transformBudget{}, 0, 0, nil, protocolBusiness, "")
 	if err != nil {
 		return TransformResult{}, genericUnsafeError(err)
 	}
@@ -149,7 +149,7 @@ func (r *Redactor) transform(body []byte, session string, injectNote bool, media
 			return TransformResult{}, err
 		}
 		result, changed = initial, false
-		walked, err = r.walkPolicy(ctx, data, session, occupied, &result, &changed, capture, &transformBudget{}, 0, 0, nil, protocolBusiness, "")
+		walked, err = r.walkPolicy(r.withKnownSnapshot(ctx), data, session, occupied, &result, &changed, capture, &transformBudget{}, 0, 0, nil, protocolBusiness, "")
 		if err != nil {
 			return TransformResult{}, genericUnsafeError(err)
 		}
@@ -315,7 +315,7 @@ func (r *Redactor) walkPolicy(
 		return r.transformUnselectedContent(ctx, val, session, occupied, result, changed, capture, budget, depth, embeddedDepth)
 	case json.Number:
 		if inherited == nil {
-			rule, known := r.knownNumberRule(val.String())
+			rule, known := r.knownNumberRule(ctx, val.String())
 			if !known {
 				return val, nil
 			}
@@ -450,7 +450,7 @@ func (r *Redactor) transformUnselectedContent(
 			return output, err
 		}
 	}
-	hasTextPolicy := len(r.detectors) > 0 || r.store.known.current() != nil
+	hasTextPolicy := len(r.detectors) > 0 || r.knownSnapshot(ctx) != nil
 	httpOutput, handled, err := protectHTTPContent(text, httpContentPolicy{
 		Transform: func(selector, name, value string) (string, error) {
 			if rule, matched := r.fieldRule(selector, name); matched {
@@ -759,7 +759,7 @@ func chooseClusterMatch(text string, cluster []detectors.Match, start, end int) 
 }
 
 func (r *Redactor) policyTextMatches(ctx context.Context, text string) ([]detectors.Match, error) {
-	all := r.store.known.current().matches(text)
+	all := r.knownSnapshot(ctx).matches(text)
 	all = append(all, r.textSelectorMatches(text)...)
 	for _, det := range r.detectors {
 		matches, err := safeDetect(ctx, det, text)
@@ -1014,15 +1014,27 @@ func (r *Redactor) applyPolicyMatches(text, session string, occupied *occupiedSe
 	return nil
 }
 
+type knownSnapshotKey struct{}
+
+// withKnownSnapshot fixes the protected values for one transform pass, so
+// values added during the pass do not rebuild matchers mid-request. A second
+// pass sees them.
+func (r *Redactor) withKnownSnapshot(ctx context.Context) context.Context {
+	return context.WithValue(ctx, knownSnapshotKey{}, r.store.known.current())
+}
+
+func (r *Redactor) knownSnapshot(ctx context.Context) *knownSnapshot {
+	if snapshot, ok := ctx.Value(knownSnapshotKey{}).(*knownSnapshot); ok {
+		return snapshot
+	}
+	return r.store.known.current()
+}
+
 // knownNumberRule returns the policy for an unselected JSON number that equals
 // a protected original. Numbers keep their JSON type through the number
 // generator unless the original was blocked.
-func (r *Redactor) knownNumberRule(number string) (FieldRule, bool) {
-	snapshot := r.store.known.current()
-	if snapshot == nil {
-		return FieldRule{}, false
-	}
-	template, ok := snapshot.numbers[number]
+func (r *Redactor) knownNumberRule(ctx context.Context, number string) (FieldRule, bool) {
+	template, ok := r.knownSnapshot(ctx).number(number)
 	if !ok {
 		return FieldRule{}, false
 	}
