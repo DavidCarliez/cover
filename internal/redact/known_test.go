@@ -286,6 +286,44 @@ func TestOverlappingKnownValuesOfOneRuleShareOneFake(t *testing.T) {
 	}
 }
 
+func TestKnownValueInsideWordRestoresExactly(t *testing.T) {
+	for _, tc := range []struct{ generator, original, later string }{
+		{"hostname", "dbprimary01", "restore dbprimary01_backup.sql"},
+		{"hostname", "dbprimary01", "ssh xdbprimary01y"},
+		{"hostname", "dbprimary01", "other host dbprimary012"},
+		{"ipv4", "10.20.30.40", "host 10.20.30.40x"},
+		{"ipv4", "10.20.30.40", "other host 10.20.30.401"},
+	} {
+		r := structuredPolicyRedactor(FieldRule{
+			Name: "sel", Keys: []string{"sel"}, Category: "sel",
+			Action: string(ActionPseudonymize), Generator: tc.generator, Priority: 220,
+		})
+		mustTransform(t, r, "s", []byte(`{"sel":"`+tc.original+`"}`))
+		out := mustTransform(t, r, "s", []byte(`{"messages":[{"role":"user","content":"`+tc.later+`"}]}`))
+		if strings.Contains(string(out.Body), tc.original) {
+			t.Fatalf("%s: leaked: %s", tc.later, out.Body)
+		}
+		// The model echoes the request text unchanged.
+		back := decodePolicyJSON(t, r.RestoreResponseForSession(out.Body, "application/json", "s"))
+		got := back.(map[string]any)["messages"].([]any)[0].(map[string]any)["content"]
+		if got != tc.later {
+			t.Errorf("%s generator: restored %q, want %q", tc.generator, got, tc.later)
+		}
+	}
+
+	// At a word boundary the generator's fake is still used.
+	r := structuredPolicyRedactor(FieldRule{
+		Name: "sel", Keys: []string{"sel"}, Category: "sel",
+		Action: string(ActionPseudonymize), Generator: "hostname", Priority: 220,
+	})
+	first := mustTransform(t, r, "s", []byte(`{"sel":"dbprimary01"}`))
+	fake := decodePolicyJSON(t, first.Body).(map[string]any)["sel"].(string)
+	out := mustTransform(t, r, "s", []byte(`{"messages":[{"role":"user","content":"ssh dbprimary01 now"}]}`))
+	if !strings.Contains(string(out.Body), "ssh "+fake+" now") {
+		t.Fatalf("boundary occurrence did not use fake %q: %s", fake, out.Body)
+	}
+}
+
 func must[T any](value T, err error) T {
 	if err != nil {
 		panic(err)

@@ -978,6 +978,15 @@ func (r *Redactor) applyPolicyMatches(text, session string, occupied *occupiedSe
 			if err != nil {
 				return fmt.Errorf("%w: generator or mapping failed", ErrUnsafeRequest)
 			}
+			// A short or numeric fake continuing a word here, as in
+			// dbprimary01_backup, would not be restored there, so an
+			// unambiguous placeholder stands in for this occurrence.
+			if ambiguousFake(replacement) && !replacementFitsAt(text, m.Start, m.End, encodeKnownValue(m.Encoding, replacement)) {
+				replacement, err = r.store.GluedPlaceholderForSession(session, original, occupied)
+				if err != nil {
+					return fmt.Errorf("%w: mapping failed", ErrUnsafeRequest)
+				}
+			}
 			result.Transformed++
 		case ActionMask:
 			replacement = maskValue(original)

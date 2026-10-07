@@ -172,6 +172,29 @@ func isWordRune(r rune) bool {
 	return r == '_' || unicode.IsLetter(r) || unicode.IsDigit(r)
 }
 
+// replacementFitsAt reports whether replacement, written in place of
+// text[start:end], would not continue a word across either edge.
+func replacementFitsAt(text string, start, end int, replacement string) bool {
+	if replacement == "" {
+		return true
+	}
+	if start > 0 {
+		before, _ := utf8.DecodeLastRuneInString(text[:start])
+		first, _ := utf8.DecodeRuneInString(replacement)
+		if isWordRune(before) && isWordRune(first) {
+			return false
+		}
+	}
+	if end < len(text) {
+		last, _ := utf8.DecodeLastRuneInString(replacement)
+		after, _ := utf8.DecodeRuneInString(text[end:])
+		if isWordRune(last) && isWordRune(after) {
+			return false
+		}
+	}
+	return true
+}
+
 // wordBoundaryMatch reports whether text[start:end] does not continue a word
 // across either edge. Edges that are not word characters always qualify.
 func wordBoundaryMatch(text string, start, end int) bool {

@@ -302,6 +302,15 @@ func (s *Store) PlaceholderForSession(session, value string, occupied *occupiedS
 	})
 }
 
+// GluedPlaceholderForSession returns a placeholder for value that coexists
+// with its fake, for an occurrence where the fake would continue a word and
+// could not be restored.
+func (s *Store) GluedPlaceholderForSession(session, value string, occupied *occupiedSet) (string, error) {
+	return s.mapValue(session, "\x00placeholder:"+value, value, false, occupied, func(attempt int) (string, error) {
+		return placeholderOpen + s.hashValue(value, attempt) + placeholderClose, nil
+	})
+}
+
 // Lookup preserves the original placeholder-hash API.
 func (s *Store) Lookup(hash string) (string, bool) {
 	return s.LookupFake(defaultSessionID, placeholderOpen+hash+placeholderClose)
