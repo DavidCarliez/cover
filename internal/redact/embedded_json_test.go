@@ -260,11 +260,13 @@ func TestMalformedRecognizedEmbeddedJSONFailsClosedWithoutRejectingSource(t *tes
 		"const result = {\"password\":\"CUSTOMER-ALPHA\"",
 		"const result =\n{\"password\":\"CUSTOMER-ALPHA\"",
 	}
+	// Source code is not rejected as malformed JSON, but a selected value
+	// written as an assignment in it is still protected.
 	for i, source := range sources {
 		body, _ := json.Marshal(map[string]string{"content": source})
 		result, err := r.Transform(body, fmt.Sprintf("source-%d", i), false, "allow")
-		if err != nil || !bytes.Equal(result.Body, body) {
-			t.Fatalf("ordinary source %d was rejected or changed: %v %s", i, err, result.Body)
+		if err != nil || bytes.Contains(result.Body, []byte("CUSTOMER-ALPHA")) {
+			t.Fatalf("ordinary source %d was rejected or leaked: %v %s", i, err, result.Body)
 		}
 	}
 }

@@ -54,3 +54,62 @@ func TestHTTPSurroundingTextReceivesStructuredPolicies(t *testing.T) {
 		})
 	}
 }
+
+func TestNamedSelectorsProtectAssignmentsInFreeText(t *testing.T) {
+	for name, tc := range map[string]struct {
+		rule FieldRule
+		text string
+	}{
+		"JSON fence inside prose":     {keyAliasRule("password"), "Here is the output:\n```json\n{\"password\":\"" + leakMarker + "\"}\n```\nDone."},
+		"JSON after prose prefix":     {keyAliasRule("password"), "note {\"password\":\"" + leakMarker + "\"}"},
+		"second JSON document":        {keyAliasRule("password"), "Result: {\"a\":1} {\"password\":\"" + leakMarker + "\"}"},
+		"curl output":                 {keyAliasRule("password"), "$ curl https://api\n{\"password\":\"" + leakMarker + "\"}"},
+		"YAML":                        {keyAliasRule("password"), "db:\n  user: app\n  password: " + leakMarker + "\n"},
+		"env file":                    {keyAliasRule("password"), "export PASSWORD=\"" + leakMarker + "\"\n"},
+		"CLI flag":                    {keyAliasRule("password"), "mysql --password=" + leakMarker + " -h db"},
+		"python dict":                 {keyAliasRule("password"), "cfg = {'password': '" + leakMarker + "'}"},
+		"escaped JSON value":          {keyAliasRule("password"), `log {"password":"a\"` + leakMarker + `"} end`},
+		"query parameter in prose":    {queryAliasRule("token"), "open https://x.example/cb?a=1&token=" + leakMarker + " now"},
+		"form field in prose":         {formAliasRule("client_secret"), "sent grant_type=x&client_secret=" + leakMarker + " ok"},
+		"header in log line":          {headerAliasRule("Authorization"), "2026-01-01 request Authorization: Bearer " + leakMarker + "\nnext"},
+		"header in curl command":      {headerAliasRule("Authorization"), "curl -sH 'Authorization: Bearer " + leakMarker + "' https://x.example"},
+		"cookie assignment in prose":  {FieldRule{Name: "c", Cookies: []string{"session"}, Action: "pseudonymize", Generator: "alias", Priority: 1}, "browser sent session=" + leakMarker + "; theme=dark"},
+		"number generator, text form": {FieldRule{Name: "n", Keys: []string{"customer_number"}, Action: "pseudonymize", Generator: "number", Priority: 1}, "customer_number: " + leakMarker},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertContentProtected(t, structuredPolicyRedactor(tc.rule), tc.text)
+		})
+	}
+}
+
+func TestFreeTextAssignmentsKeepUnrelatedProse(t *testing.T) {
+	r := structuredPolicyRedactor(keyAliasRule("password"))
+	for _, text := range []string{
+		"Reset your password before Friday.",
+		"password_hint: blue",
+		"mypassword=abc",
+		"password: true",
+		"password = os.getenv(\"DB_PASSWORD\")",
+		"PASSWORD=$DB_PASSWORD ./run.sh",
+		"password = null",
+	} {
+		body, _ := json.Marshal(map[string]string{"input": text})
+		result, err := r.Transform(body, "s", false, "allow")
+		if err != nil {
+			t.Fatalf("rejected %q: %v", text, err)
+		}
+		if got := decodePolicyJSON(t, result.Body).(map[string]any)["input"]; got != text {
+			t.Errorf("changed %q to %q", text, got)
+		}
+	}
+}
+
+func TestFreeTextAssignmentRoundTripsEscapedValue(t *testing.T) {
+	r := structuredPolicyRedactor(keyAliasRule("password"))
+	text := `log {"password":"a\"b` + leakMarker + `"} end`
+	out := assertContentProtected(t, r, text)
+	restored := string(r.RestoreForSession([]byte(out), "s"))
+	if restored != text {
+		t.Fatalf("restored %q, want %q", restored, text)
+	}
+}

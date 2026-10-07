@@ -49,6 +49,7 @@ type Redactor struct {
 	llmConcurrency        int
 	llmBatchSize          int
 	fieldRules            []FieldRule
+	textSelectors         []textSelector
 	fieldRulesValid       bool
 	hasKeyRules           bool
 	hasHeaderRules        bool
@@ -112,6 +113,7 @@ func New(store *Store, llmBudget time.Duration, opts RedactorOptions, dets ...de
 		llmConcurrency:        opts.LLMConcurrency,
 		llmBatchSize:          opts.LLMBatchSize,
 		fieldRules:            fieldRules,
+		textSelectors:         buildTextSelectors(fieldRules),
 		fieldRulesValid:       fieldRulesValid,
 		hasKeyRules:           hasKeyRules,
 		hasHeaderRules:        hasHeaderRules,

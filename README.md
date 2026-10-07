@@ -355,6 +355,20 @@ The `limits.sse_event_bytes` budget bounds queued argument events across
 interleaved tools. Incomplete arguments abort the stream. Ordinary text
 deltas and heartbeat comments continue to stream.
 
+### Selected names in plain text
+
+Named selectors also protect assignments written as plain text, where no
+parser recognizes the structure: a JSON fragment inside prose or a code
+block, YAML, `.env` files, CLI flags, Python dicts, logs, or a URL inside a
+sentence. A `keys`, `form_fields`, `query_params` or `cookies` rule matches
+`name: value`, `name=value`, `"name": "value"` and `'name': 'value'`; a
+`headers` rule matches `Name: value` up to the end of the line or quote.
+Names match whole words with the rule's case sensitivity. Values are
+protected exactly as written. Unquoted `true`, `false`, `null`, shell
+variables such as `$PASSWORD` and function calls such as `os.getenv(...)` are
+left unchanged. A value that its generator cannot represent, such as a
+non-numeric value for `number`, becomes a placeholder.
+
 ### Deterministic HTML inspection
 
 Recognized HTML documents, fragments, HTML fences, HTTP HTML bodies and literal
