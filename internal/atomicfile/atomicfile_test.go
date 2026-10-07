@@ -35,6 +35,33 @@ func TestWriteKeepsSymlinkAndPermissions(t *testing.T) {
 	}
 }
 
+func TestWriteKeepsDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	// A dotfiles manager may link a profile before its target exists.
+	target := filepath.Join(dir, "dotfiles", "fish", "cover.fish")
+	link := filepath.Join(dir, "cover.fish")
+	if err := os.Symlink(filepath.Join("dotfiles", "fish", "cover.fish"), link); err != nil {
+		t.Skip("symlinks unavailable")
+	}
+	if err := Write(link, []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("dangling symlink was replaced by a regular file")
+	}
+	if data, err := os.ReadFile(target); err != nil || string(data) != "new" {
+		t.Fatalf("target=%q err=%v", data, err)
+	}
+
+	loop := filepath.Join(dir, "loop")
+	if err := os.Symlink("loop", loop); err != nil {
+		t.Fatal(err)
+	}
+	if err := Write(loop, []byte("x"), 0o600); err == nil {
+		t.Fatal("symlink loop was replaced")
+	}
+}
+
 func TestWriteCreatesWithPermission(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "new", "config.yaml")
 	if err := Write(path, []byte("x"), 0o600); err != nil {
