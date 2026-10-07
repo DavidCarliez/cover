@@ -671,7 +671,13 @@ can corrupt it. Cover does not inspect pixels, and no media policy can
 recognize every possible encoding.
 
 Cover rejects non-loopback listeners unless `network.allow_remote: true` is
-explicitly configured. If Cover and its upstream router run on different
+explicitly configured. The upstream must be an `http` or `https` URL that does
+not point back to Cover's own listener. Each Cover process also adds a random
+`X-Cover-Hop` identifier to forwarded requests and answers HTTP 508 when a
+request returns carrying its own identifier. Hop-by-hop headers, including
+`Proxy-Authorization` and headers named by `Connection`, are not forwarded.
+Upstream connections honour `HTTPS_PROXY`/`NO_PROXY` and use HTTP/2 when
+the upstream offers it. If Cover and its upstream router run on different
 hosts, use TLS or another trusted transport and apply separate network access
 controls. Cover itself does not authenticate ordinary proxy traffic.
 

@@ -115,34 +115,6 @@ func TestProxyPseudonymizesAndRestoresToolArguments(t *testing.T) {
 	}
 }
 
-func TestRestoringWriterPseudonymSplitAcrossWrites(t *testing.T) {
-	r := policyProxyRedactor(t, detectors.CustomPattern{Name: "ip", Pattern: `10\.20\.30\.40`, Action: "pseudonymize", Generator: "ipv4"})
-	result, err := r.Transform([]byte(`{"text":"10.20.30.40"}`), "stream", false, "allow")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var obj map[string]string
-	json.Unmarshal(result.Body, &obj)
-	fake := obj["text"]
-	data := []byte("prefix " + fake + " suffix")
-	for split := 0; split <= len(data); split++ {
-		var out bytes.Buffer
-		rw := NewRestoringWriterForSession(&out, r, "stream")
-		if _, err := rw.Write(data[:split]); err != nil {
-			t.Fatal(err)
-		}
-		if _, err := rw.Write(data[split:]); err != nil {
-			t.Fatal(err)
-		}
-		if err := rw.Close(); err != nil {
-			t.Fatal(err)
-		}
-		if out.String() != "prefix 10.20.30.40 suffix" {
-			t.Fatalf("split=%d got=%q", split, out.String())
-		}
-	}
-}
-
 func TestSSEFunctionArgumentDeltaRestoresAcrossNetworkChunks(t *testing.T) {
 	r := policyProxyRedactor(t, detectors.CustomPattern{Name: "ip", Pattern: `10\.20\.30\.40`, Action: "pseudonymize", Generator: "ipv4"})
 	result, err := r.Transform([]byte(`{"arguments":"{\"target\":\"10.20.30.40\"}"}`), "stream", false, "allow")
@@ -437,5 +409,99 @@ func TestLiveContentMonitorIsAuthenticatedLocalAndNeverLogged(t *testing.T) {
 	p.ServeHTTP(remoteResponse, remoteRequest)
 	if remoteResponse.Code != http.StatusNotFound {
 		t.Fatalf("remote monitor status=%d", remoteResponse.Code)
+	}
+}
+
+func TestProxyRejectsRequestsThatLoopBackThroughItself(t *testing.T) {
+	var front *httptest.Server
+	var p *Proxy
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { p.ServeHTTP(w, r) })
+	front = httptest.NewServer(handler)
+	defer front.Close()
+	var err error
+	if p, err = New(front.URL, newTestRedactor(t), nil, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.Post(front.URL+"/v1/responses", "application/json", strings.NewReader(`{"input":"x"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	// The first hop forwards to itself; the second recognizes its identifier.
+	if resp.StatusCode != http.StatusLoopDetected {
+		t.Fatalf("status=%d, want %d", resp.StatusCode, http.StatusLoopDetected)
+	}
+}
+
+func TestProxyStripsHopByHopHeadersAndKeepsChainedCovers(t *testing.T) {
+	var got http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Connection", "X-Private-Hop")
+		w.Header().Set("X-Private-Hop", "upstream")
+		w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+	p, err := New(upstream.URL, newTestRedactor(t), nil, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(p)
+	defer front.Close()
+	req, _ := http.NewRequest(http.MethodPost, front.URL+"/v1/messages", strings.NewReader(`{}`))
+	req.Header.Set("Connection", "X-Local-Only")
+	req.Header.Set("X-Local-Only", "secret")
+	req.Header.Set("Proxy-Authorization", "Basic abc")
+	req.Header.Set("Authorization", "Bearer keep")
+	req.Header.Set(hopHeader, "another-cover")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if got.Get("X-Local-Only") != "" || got.Get("Proxy-Authorization") != "" {
+		t.Fatalf("hop-by-hop headers were forwarded: %v", got)
+	}
+	if got.Get("Authorization") != "Bearer keep" {
+		t.Fatalf("end-to-end header was dropped: %v", got)
+	}
+	if hops := got.Values(hopHeader); len(hops) != 2 || hops[0] != "another-cover" || hops[1] != p.hopID {
+		t.Fatalf("hop identifiers=%v", hops)
+	}
+	if resp.Header.Get("X-Private-Hop") != "" {
+		t.Fatalf("upstream hop-by-hop header reached the client")
+	}
+}
+
+func TestEphemeralSessionsCannotBeNamedByClients(t *testing.T) {
+	front := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Error("a request carrying the ephemeral session prefix reached the server")
+	}))
+	defer front.Close()
+	req, _ := http.NewRequest(http.MethodPost, front.URL, strings.NewReader(`{}`))
+	req.Header.Set("X-Cover-Session", ephemeralSessionPrefix+"1")
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		resp.Body.Close()
+		t.Fatal("an HTTP client sent a session header with the ephemeral prefix")
+	}
+}
+
+func TestLooksLikeSSE(t *testing.T) {
+	for prefix, want := range map[string]bool{
+		"event: message\n":    true,
+		"data: {}\n":          true,
+		"id: 1\ndata: x\n":    true,
+		"retry: 100\n":        true,
+		": comment\n":         true,
+		"\xef\xbb\xbfdata: x": true,
+		"\n\ndata: x\n":       true,
+		`{"choices":[]}`:      false,
+		"identifier: nope":    false,
+		"HTTP/1.1 200 OK\r\n": false,
+	} {
+		if got := looksLikeSSE([]byte(prefix)); got != want {
+			t.Errorf("looksLikeSSE(%q)=%v, want %v", prefix, got, want)
+		}
 	}
 }

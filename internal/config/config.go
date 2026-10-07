@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -276,6 +277,15 @@ func (c *Config) Validate() error {
 	if err := validateListen(c.Listen, c.Network.AllowRemote); err != nil {
 		return err
 	}
+	if c.Upstream != "" {
+		u, err := url.Parse(c.Upstream)
+		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Hostname() == "" {
+			return fmt.Errorf("upstream must be an http or https URL with a host")
+		}
+		if UpstreamLoopsToListener(c.Upstream, c.Listen) {
+			return fmt.Errorf("upstream must not point back to Cover's own listen address")
+		}
+	}
 	if c.Limits.RequestBytes <= 0 || c.Limits.ResponseBytes <= 0 || c.Limits.SSEEventBytes <= 0 {
 		return fmt.Errorf("request, response, and SSE event byte limits must be positive")
 	}
@@ -324,6 +334,35 @@ func (c *Config) Validate() error {
 		return err
 	}
 	return nil
+}
+
+// UpstreamLoopsToListener reports whether upstream addresses the listener
+// itself. Loopback names and the unspecified address are equivalent.
+func UpstreamLoopsToListener(upstream, listen string) bool {
+	u, err := url.Parse(upstream)
+	if err != nil {
+		return false
+	}
+	listenHost, listenPort, err := net.SplitHostPort(listen)
+	if err != nil {
+		return false
+	}
+	port := u.Port()
+	if port == "" {
+		port = map[string]string{"http": "80", "https": "443"}[u.Scheme]
+	}
+	if port != listenPort {
+		return false
+	}
+	local := func(host string) bool {
+		if strings.EqualFold(host, "localhost") {
+			return true
+		}
+		ip := net.ParseIP(host)
+		return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+	}
+	host := u.Hostname()
+	return strings.EqualFold(host, listenHost) || local(host) && (local(listenHost) || listenHost == "")
 }
 
 func validateListen(addr string, allowRemote bool) error {

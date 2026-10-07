@@ -410,3 +410,25 @@ func TestExists(t *testing.T) {
 		t.Error("Exists = false for existing file")
 	}
 }
+
+func TestValidateRejectsInvalidOrLoopingUpstream(t *testing.T) {
+	for upstream, wantErr := range map[string]bool{
+		"https://api.anthropic.com":   false,
+		"http://127.0.0.1:4102/v1":    false,
+		"":                            false,
+		"api.openai.com":              true,
+		"ftp://router.example":        true,
+		"http://127.0.0.1:8317":       true,
+		"http://localhost:8317/v1":    true,
+		"http://[::1]:8317":           true,
+		"http://0.0.0.0:8317":         true,
+		"http://router.internal:8317": false,
+	} {
+		cfg := Default()
+		cfg.Listen = "127.0.0.1:8317"
+		cfg.Upstream = upstream
+		if err := cfg.Validate(); (err != nil) != wantErr {
+			t.Errorf("upstream %q: err=%v, want error %v", upstream, err, wantErr)
+		}
+	}
+}

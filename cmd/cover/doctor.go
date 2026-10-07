@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -258,8 +257,7 @@ func normalizeBaseURL(value string) string {
 }
 
 func upstreamLoopsToCover(upstream, listen string) bool {
-	u, err := url.Parse(upstream)
-	return err == nil && strings.EqualFold(u.Host, listen)
+	return config.UpstreamLoopsToListener(upstream, listen)
 }
 
 func isLoopbackListen(listen string) bool {

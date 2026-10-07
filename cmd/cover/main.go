@@ -613,7 +613,7 @@ func runForeground() error {
 		return err
 	}
 
-	srv := &http.Server{Handler: p}
+	srv := &http.Server{Handler: p, ReadHeaderTimeout: 30 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 

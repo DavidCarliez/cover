@@ -6,7 +6,9 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"crypto/rand"
 	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +36,20 @@ const (
 )
 
 var errBodyTooLarge = errors.New("body exceeds configured limit")
+
+// hopHeader carries one random identifier per Cover process. A request that
+// already carries this process's identifier has looped back through it.
+const hopHeader = "X-Cover-Hop"
+
+// ephemeralSessionPrefix cannot occur in an HTTP header value, so a client
+// session header cannot name a request-scoped session.
+const ephemeralSessionPrefix = "\x00request-"
+
+// hopByHopHeaders apply to one connection and are never forwarded.
+var hopByHopHeaders = []string{
+	"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate",
+	"Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade",
+}
 
 // Options configures upstream HTTP client timeouts. Zero values use defaults.
 type Options struct {
@@ -83,6 +99,7 @@ type Proxy struct {
 	nextSession  atomic.Uint64
 	contentHub   *activity.Hub
 	contentToken string
+	hopID        string
 }
 
 // New creates a Proxy that forwards to upstream (must include scheme and
@@ -100,12 +117,22 @@ func New(upstream string, redactor *redact.Redactor, logger *log.Logger, opts Op
 
 	opts = opts.withDefaults()
 	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
 		DialContext:           (&net.Dialer{Timeout: opts.ConnectTimeout}).DialContext,
 		TLSHandshakeTimeout:   opts.ConnectTimeout,
 		ResponseHeaderTimeout: opts.ResponseHeaderTimeout,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          64,
+		MaxIdleConnsPerHost:   16,
+		IdleConnTimeout:       90 * time.Second,
+	}
+	var hop [8]byte
+	if _, err := rand.Read(hop[:]); err != nil {
+		return nil, fmt.Errorf("generating proxy identifier: %w", err)
 	}
 
 	return &Proxy{
+		hopID:        hex.EncodeToString(hop[:]),
 		upstream:     u,
 		client:       &http.Client{Transport: transport},
 		redactor:     redactor,
@@ -124,6 +151,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	started := time.Now()
 	defer r.Body.Close()
+	for _, value := range r.Header.Values(hopHeader) {
+		for _, id := range strings.Split(value, ",") {
+			if strings.TrimSpace(id) == p.hopID {
+				p.logf("status=%d error=proxy_loop", http.StatusLoopDetected)
+				http.Error(w, "request rejected: upstream points back to Cover", http.StatusLoopDetected)
+				return
+			}
+		}
+	}
 	body, err := readAtMost(r.Body, p.options.MaxRequestBytes)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
@@ -131,7 +167,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "request rejected: body exceeds configured limit", http.StatusRequestEntityTooLarge)
 			return
 		}
-		http.Error(w, "failed to read request body", http.StatusBadGateway)
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
 	}
 	session := ""
@@ -145,7 +181,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if ephemeralSession {
-		session = fmt.Sprintf("request-%d", p.nextSession.Add(1))
+		session = fmt.Sprintf("%s%d", ephemeralSessionPrefix, p.nextSession.Add(1))
 		defer p.redactor.EndSession(session)
 	}
 	// Do not inject protocol-specific guard notes. Generic recursive rewriting
@@ -191,7 +227,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	outReq.Header = r.Header.Clone()
-	outReq.Header.Del("Connection")
+	removeHopByHopHeaders(outReq.Header)
+	outReq.Header.Add(hopHeader, p.hopID)
 	if p.options.SessionHeader != "" {
 		outReq.Header.Del(p.options.SessionHeader)
 	}
@@ -224,19 +261,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Some compatible routers omit the media type on SSE responses.
 		// Keep the sniff bounded and replay every byte through the selected writer.
 		buffered := bufio.NewReader(resp.Body)
-		prefix, _ := buffered.Peek(6)
+		prefix, _ := buffered.Peek(64)
 		responseBody = buffered
-		sse = bytes.HasPrefix(prefix, []byte("event:")) ||
-			bytes.HasPrefix(prefix, []byte("data:")) ||
-			bytes.HasPrefix(prefix, []byte(":"))
+		sse = looksLikeSSE(prefix)
 		if sse {
 			ct = "text/event-stream"
 			resp.Header.Set("Content-Type", ct)
 		}
 	}
-	streaming := sse || resp.Header.Get("Transfer-Encoding") == "chunked"
+	// Other responses, including chunked JSON, are buffered so restored
+	// values are re-encoded with the escaping of their JSON context.
 	responseBytes := 0
-	if streaming {
+	if sse {
 		copyResponseHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
 		var rw interface {
@@ -244,11 +280,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Close() error
 		}
 		counted := &countingWriter{w: w}
-		if sse {
-			rw = NewSSERestoringWriterWithLimits(counted, p.redactor, session, p.options.MaxSSEEventBytes, p.options.MaxResponseBytes)
-		} else {
-			rw = NewRestoringWriterForSession(counted, p.redactor, session)
-		}
+		rw = NewSSERestoringWriterWithLimits(counted, p.redactor, session, p.options.MaxSSEEventBytes, p.options.MaxResponseBytes)
 		if _, err := io.Copy(rw, &cappedReader{r: responseBody, remaining: p.options.MaxResponseBytes}); err != nil {
 			p.logf("status=502 error=%s", streamErrorCode(err))
 			// Headers may already be sent. Abort the transport so the client
@@ -394,8 +426,10 @@ func readAtMost(r io.Reader, max int64) ([]byte, error) {
 }
 
 func copyResponseHeaders(dst, src http.Header) {
+	src = src.Clone()
+	removeHopByHopHeaders(src)
 	for k, vv := range src {
-		if k == "Content-Length" || k == "Transfer-Encoding" {
+		if k == "Content-Length" {
 			continue
 		}
 		for _, v := range vv {
@@ -405,19 +439,32 @@ func copyResponseHeaders(dst, src http.Header) {
 	dst.Del("Content-Length")
 }
 
-func safeContentEncoding(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "identity":
-		return "identity"
-	case "gzip":
-		return "gzip"
-	case "zstd":
-		return "zstd"
-	case "br":
-		return "br"
-	default:
-		return "other"
+// removeHopByHopHeaders deletes connection-scoped headers, including those
+// that the Connection header names.
+func removeHopByHopHeaders(h http.Header) {
+	for _, value := range h.Values("Connection") {
+		for _, name := range strings.Split(value, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				h.Del(name)
+			}
+		}
 	}
+	for _, name := range hopByHopHeaders {
+		h.Del(name)
+	}
+}
+
+// looksLikeSSE recognizes an event stream without a media type by its first
+// field, after an optional byte-order mark and blank lines.
+func looksLikeSSE(prefix []byte) bool {
+	prefix = bytes.TrimPrefix(prefix, []byte("\xef\xbb\xbf"))
+	prefix = bytes.TrimLeft(prefix, "\r\n")
+	for _, field := range []string{"event:", "data:", "id:", "retry:", ":"} {
+		if bytes.HasPrefix(prefix, []byte(field)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Proxy) logf(format string, args ...any) {
