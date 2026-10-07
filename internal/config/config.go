@@ -339,7 +339,10 @@ func (c *Config) Validate() error {
 }
 
 // UpstreamLoopsToListener reports whether upstream addresses the listener
-// itself. Loopback names and the unspecified address are equivalent.
+// itself: the same address, localhost for a loopback listener, or any
+// address of this machine for a listener on all interfaces. Distinct
+// loopback addresses, such as 127.0.0.2 or ::1 for 127.0.0.1, are distinct
+// sockets.
 func UpstreamLoopsToListener(upstream, listen string) bool {
 	u, err := url.Parse(upstream)
 	if err != nil {
@@ -356,15 +359,55 @@ func UpstreamLoopsToListener(upstream, listen string) bool {
 	if port != listenPort {
 		return false
 	}
-	local := func(host string) bool {
-		if strings.EqualFold(host, "localhost") {
+	host := u.Hostname()
+	if strings.EqualFold(host, listenHost) {
+		return true
+	}
+	targets := localAddresses(host)
+	if ip := net.ParseIP(listenHost); listenHost == "" || ip != nil && ip.IsUnspecified() {
+		if len(targets) > 0 {
 			return true
 		}
-		ip := net.ParseIP(host)
-		return ip != nil && (ip.IsLoopback() || ip.IsUnspecified())
+		// A listener on every interface also accepts this machine's own
+		// addresses.
+		target := net.ParseIP(host)
+		addrs, _ := net.InterfaceAddrs()
+		for _, addr := range addrs {
+			if prefix, ok := addr.(*net.IPNet); ok && target != nil && prefix.IP.Equal(target) {
+				return true
+			}
+		}
+		return false
 	}
-	host := u.Hostname()
-	return strings.EqualFold(host, listenHost) || local(host) && (local(listenHost) || listenHost == "")
+	for _, target := range targets {
+		for _, listener := range localAddresses(listenHost) {
+			if target.Equal(listener) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// localAddresses returns the loopback addresses a connection to host
+// reaches: both loopbacks for localhost, and the loopback of the same
+// family for an unspecified address.
+func localAddresses(host string) []net.IP {
+	if strings.EqualFold(host, "localhost") {
+		return []net.IP{net.IPv4(127, 0, 0, 1), net.IPv6loopback}
+	}
+	ip := net.ParseIP(host)
+	switch {
+	case ip == nil:
+		return nil
+	case ip.Equal(net.IPv4zero):
+		return []net.IP{net.IPv4(127, 0, 0, 1)}
+	case ip.Equal(net.IPv6unspecified):
+		return []net.IP{net.IPv6loopback}
+	case ip.IsLoopback():
+		return []net.IP{ip}
+	}
+	return nil
 }
 
 func validateListen(addr string, allowRemote bool) error {

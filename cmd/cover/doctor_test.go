@@ -66,6 +66,27 @@ func TestUpstreamLoopDetection(t *testing.T) {
 	if upstreamLoopsToCover("http://127.0.0.1:4102/v1", "127.0.0.1:8317") {
 		t.Fatal("distinct upstream was treated as a loop")
 	}
+	for _, tc := range []struct {
+		upstream, listen string
+		loops            bool
+	}{
+		{"http://localhost:8317", "127.0.0.1:8317", true},
+		{"http://127.0.0.1:8317", "localhost:8317", true},
+		{"http://[::1]:8317", "localhost:8317", true},
+		{"http://0.0.0.0:8317", "127.0.0.1:8317", true},
+		{"http://127.0.0.1:8317", "0.0.0.0:8317", true},
+		{"http://127.0.0.5:8317", ":8317", true},
+		{"http://LOCALHOST:8317", "localhost:8317", true},
+		// Distinct loopback sockets.
+		{"http://127.0.0.2:8317", "127.0.0.1:8317", false},
+		{"http://[::1]:8317", "127.0.0.1:8317", false},
+		{"http://127.0.0.1:8317", "[::1]:8317", false},
+		{"https://api.example.com", "127.0.0.1:443", false},
+	} {
+		if got := upstreamLoopsToCover(tc.upstream, tc.listen); got != tc.loops {
+			t.Errorf("upstream %s, listen %s: loops=%v, want %v", tc.upstream, tc.listen, got, tc.loops)
+		}
+	}
 }
 
 func TestLoopbackListenerDetection(t *testing.T) {
