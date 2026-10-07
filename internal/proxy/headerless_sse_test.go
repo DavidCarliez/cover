@@ -108,3 +108,53 @@ func TestProxyPreservesHeaderlessNonSSEResponse(t *testing.T) {
 		})
 	}
 }
+
+func TestProxyRestoresSSEStartingWithByteOrderMark(t *testing.T) {
+	const original = "CUSTOMER-ALPHA"
+	for _, contentType := range []string{"text/event-stream", ""} {
+		t.Run("type="+contentType, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				var body map[string]string
+				if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+					t.Error(err)
+					return
+				}
+				if contentType == "" {
+					w.Header()["Content-Type"] = nil
+				} else {
+					w.Header().Set("Content-Type", contentType)
+				}
+				// Split the mark across writes to exercise buffering.
+				fmt.Fprint(w, "\xef\xbb")
+				w.(http.Flusher).Flush()
+				fmt.Fprint(w, "\xbf"+sseDeltaEvent("response.output_text.delta", body["input"], 0))
+				fmt.Fprint(w, "data: [DONE]\n\n")
+			}))
+			defer upstream.Close()
+			r := policyProxyRedactor(t, detectors.CustomPattern{
+				Name: "customer", Pattern: original, Action: "pseudonymize", Generator: "alias",
+			})
+			p, err := New(upstream.URL, r, nil, Options{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			front := httptest.NewServer(p)
+			defer front.Close()
+			response, err := http.Post(front.URL+"/responses", "application/json", strings.NewReader(`{"input":"CUSTOMER-ALPHA"}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			stream, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.HasPrefix(string(stream), "\xef\xbb\xbf") {
+				t.Fatalf("byte order mark was not kept: %q", stream)
+			}
+			if got := joinedTopLevelDeltas(t, strings.TrimPrefix(string(stream), "\xef\xbb\xbf")); got != original {
+				t.Fatalf("first event was not restored: %q", stream)
+			}
+		})
+	}
+}

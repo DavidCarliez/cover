@@ -39,6 +39,9 @@ type SSERestoringWriter struct {
 	maxQueue    int64
 	lastEmit    time.Time
 	now         func() time.Time
+	// started is set once the stream is past a possible leading byte
+	// order mark.
+	started bool
 }
 
 // A channel retains its last delta until the next fragment or its end event.
@@ -85,9 +88,25 @@ func NewSSERestoringWriterWithLimits(w io.Writer, redactor *redact.Redactor, ses
 		pending: make(map[string]*sseFragmentEvent), arguments: make(map[string]*sseArgumentBuffer)}
 }
 
+var utf8BOM = []byte("\xef\xbb\xbf")
+
 // Write implements io.Writer.
 func (rw *SSERestoringWriter) Write(p []byte) (int, error) {
 	rw.buf = append(rw.buf, p...)
+	if !rw.started {
+		// A leading byte order mark is not part of the first field name, so
+		// it passes through ahead of the first event.
+		if len(rw.buf) < len(utf8BOM) && bytes.HasPrefix(utf8BOM, rw.buf) {
+			return len(p), nil
+		}
+		rw.started = true
+		if bytes.HasPrefix(rw.buf, utf8BOM) {
+			if err := rw.emit(utf8BOM); err != nil {
+				return 0, err
+			}
+			rw.buf = rw.buf[len(utf8BOM):]
+		}
+	}
 	for {
 		end := nextSSEEventEnd(rw.buf)
 		if end < 0 {
