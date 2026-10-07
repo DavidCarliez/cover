@@ -356,10 +356,12 @@ Selected booleans require `allow` or `block`; null stays null.
 Malformed recognizable JSON, NDJSON and JSON-like source with a selected key
 are not rejected when every selected value is a scalar: those values are
 protected as plain-text assignments. Malformed JSON that gives a selected key
-an object, an array or an unterminated string is rejected, not forwarded.
+an object, an array or an unterminated string, puts its value on another
+line, or spells the key with escapes is rejected, not forwarded.
 Malformed HTTP framing, unsupported encoded/chunked wire bodies, and exhausted
 parser budgets also fail closed. A standalone URL or form with a literal `%`,
-such as `?progress=50%`, is scanned as plain text. HTML `data-` attributes
+such as `?progress=50%`, is scanned as plain text, unless a selected
+parameter name in it is percent-encoded, which is rejected. HTML `data-` attributes
 use the `keys` rule for the rest of their name, so `data-password` is
 selected by `password`.
 

@@ -489,6 +489,10 @@ func (r *Redactor) transformUnselectedContent(
 			_, matched := r.fieldRule(selectorHeaders, name)
 			return matched
 		},
+		Selected: func(selector, name string) bool {
+			_, matched := r.fieldRule(selector, name)
+			return matched
+		},
 		HasHeaders: hasTextPolicy || r.hasHeaderRules,
 		HasCookies: hasTextPolicy || r.hasCookieRules,
 		HasQuery:   hasTextPolicy || r.hasQueryRules,

@@ -263,6 +263,10 @@ func TestMalformedRecognizedEmbeddedJSONFailsClosedWithoutRejectingSource(t *tes
 		`{"password":{"value":"CUSTOMER-ALPHA"}`,
 		`{"password":["CUSTOMER-ALPHA"`,
 		`{"password":"CUSTOMER-ALPHA`,
+		// The plain-text net cannot pair these with their key.
+		"{\"password\":\n  \"CUSTOMER-ALPHA\",, }",
+		"{\"password\"\n  : \"CUSTOMER-ALPHA\",, }",
+		`{"pass\u0077ord": "CUSTOMER-ALPHA",, }`,
 	}
 	for i, text := range containers {
 		body, _ := json.Marshal(map[string]string{"content": text})

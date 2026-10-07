@@ -443,7 +443,8 @@ func resultPrefix(prefix string) bool {
 
 // selectedJSONFieldNeedsParser reports whether malformed JSON text gives a
 // selected key a value that the plain-text selector net cannot protect: an
-// object, an array, or a string that does not end on its line. Scalar values
+// object, an array, a string that does not end on its line, a value on
+// another line than its key, or a key written with escapes. Scalar values
 // of selected keys in malformed JSON, NDJSON or JSON-like source are
 // protected as plain-text assignments instead of rejecting the request.
 func (r *Redactor) selectedJSONFieldNeedsParser(text string) bool {
@@ -477,9 +478,14 @@ func (r *Redactor) selectedJSONFieldNeedsParser(text string) bool {
 			return false
 		}
 		j := i + 1
-		for j < len(text) && (text[j] == ' ' || text[j] == '\t' || text[j] == '\r' || text[j] == '\n') {
-			j++
+		newline := false
+		skipSpace := func() {
+			for j < len(text) && (text[j] == ' ' || text[j] == '\t' || text[j] == '\r' || text[j] == '\n') {
+				newline = newline || text[j] == '\r' || text[j] == '\n'
+				j++
+			}
 		}
+		skipSpace()
 		if j >= len(text) || text[j] != ':' {
 			continue
 		}
@@ -490,12 +496,17 @@ func (r *Redactor) selectedJSONFieldNeedsParser(text string) bool {
 		if _, matched := r.fieldRule(selectorKeys, name); !matched {
 			continue
 		}
-		j++
-		for j < len(text) && (text[j] == ' ' || text[j] == '\t' || text[j] == '\r' || text[j] == '\n') {
-			j++
+		// The plain-text net matches a literal name and value on one line.
+		if name != text[start+1:i] {
+			return true
 		}
+		j++
+		skipSpace()
 		if j >= len(text) {
 			continue
+		}
+		if newline {
+			return true
 		}
 		switch text[j] {
 		case '{', '[':

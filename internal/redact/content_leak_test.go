@@ -2,6 +2,7 @@ package redact
 
 import (
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -262,6 +263,21 @@ func TestMalformedStructuredTextIsProtectedNotRejected(t *testing.T) {
 			assertContentProtected(t, structuredPolicyRedactor(tc.rule), tc.text)
 		})
 	}
+	// An encoded selected name cannot be matched as plain text, so a
+	// string that also has a literal % fails closed.
+	for _, tc := range []struct {
+		rule FieldRule
+		text string
+	}{
+		{queryAliasRule("api_key"), "https://x.example/?api%5Fkey=" + leakMarker + "&p=50%"},
+		{formAliasRule("api_key"), "api%5Fkey=" + leakMarker + "&p=50%"},
+	} {
+		body, _ := json.Marshal(map[string]string{"input": tc.text})
+		if result, err := structuredPolicyRedactor(tc.rule).Transform(body, "s", false, "allow"); !errors.Is(err, ErrUnsafeRequest) {
+			t.Fatalf("%q: err=%v body=%s", tc.text, err, result.Body)
+		}
+	}
+
 	r := structuredPolicyRedactor(keyAliasRule("password"))
 	body, _ := json.Marshal(map[string]string{"input": `<script type="application/json"></script><p>ok</p>`})
 	if _, err := r.Transform(body, "s", false, "allow"); err != nil {

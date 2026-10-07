@@ -21,6 +21,8 @@ type httpContentPolicy struct {
 	// HeaderSelected identifies explicit whole-header policies. A nil callback
 	// also permits restoration of an opaque whole-header alias.
 	HeaderSelected func(name string) bool
+	// Selected reports whether a rule selects a parameter name.
+	Selected func(selector, name string) bool
 
 	HasHeaders bool
 	HasCookies bool
@@ -1218,9 +1220,19 @@ func protectStandaloneURL(text string, policy httpContentPolicy) (string, bool, 
 	if !strings.HasPrefix(lower, "http://") && !strings.HasPrefix(lower, "https://") {
 		return text, false, nil
 	}
+	if !strings.Contains(candidate, "?") {
+		return text, false, nil
+	}
 	// A literal % such as ?progress=50% is not a parseable query; the
 	// plain-text pipeline protects its assignments instead.
-	if !strings.Contains(candidate, "?") || !validPercentEscapes(candidate) {
+	if !validPercentEscapes(candidate) {
+		query := candidate[strings.IndexByte(candidate, '?')+1:]
+		if fragment := strings.IndexByte(query, '#'); fragment >= 0 {
+			query = query[:fragment]
+		}
+		if encodedSelectedParameter(query, selectorQueryParams, policy) {
+			return "", true, unsafeHTTPContentError()
+		}
 		return text, false, nil
 	}
 	parsed, err := url.Parse(candidate)
@@ -1241,7 +1253,13 @@ func protectStandaloneForm(text string, policy httpContentPolicy) (string, bool,
 		return text, false, nil
 	}
 	candidate := text[start:end]
-	if !looksLikeStandaloneForm(candidate) || !validPercentEscapes(candidate) {
+	if !looksLikeStandaloneForm(candidate) {
+		return text, false, nil
+	}
+	if !validPercentEscapes(candidate) {
+		if encodedSelectedParameter(candidate, selectorFormFields, policy) {
+			return "", true, unsafeHTTPContentError()
+		}
 		return text, false, nil
 	}
 	transformed, _, err := transformParameterString(candidate, selectorFormFields, policy, true)
@@ -1378,6 +1396,55 @@ func safeHTTPGapLine(line string) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// encodedSelectedParameter reports whether a parameter string that cannot be
+// parsed has a percent-encoded name, such as api%5Fkey, that a rule selects.
+// The plain-text pipeline matches only literal names, so it cannot protect
+// that parameter in place.
+func encodedSelectedParameter(raw, selector string, policy httpContentPolicy) bool {
+	if policy.Selected == nil {
+		return false
+	}
+	for _, part := range strings.Split(raw, "&") {
+		name, _, _ := strings.Cut(part, "=")
+		if !strings.ContainsAny(name, "%+") {
+			continue
+		}
+		if decoded := lenientQueryUnescape(name); decoded != name && policy.Selected(selector, decoded) {
+			return true
+		}
+	}
+	return false
+}
+
+// lenientQueryUnescape decodes valid percent escapes and plus signs and keeps
+// any other % literally.
+func lenientQueryUnescape(text string) string {
+	var b strings.Builder
+	for i := 0; i < len(text); i++ {
+		switch {
+		case text[i] == '%' && i+2 < len(text) && isHexDigit(text[i+1]) && isHexDigit(text[i+2]):
+			b.WriteByte(unhexDigit(text[i+1])<<4 | unhexDigit(text[i+2]))
+			i += 2
+		case text[i] == '+':
+			b.WriteByte(' ')
+		default:
+			b.WriteByte(text[i])
+		}
+	}
+	return b.String()
+}
+
+func unhexDigit(c byte) byte {
+	switch {
+	case c >= '0' && c <= '9':
+		return c - '0'
+	case c >= 'a' && c <= 'f':
+		return c - 'a' + 10
+	default:
+		return c - 'A' + 10
 	}
 }
 
