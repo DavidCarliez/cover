@@ -8,6 +8,10 @@ builds:
     binary: cover
     env:
       - CGO_ENABLED=0
+    # Reproducible builds: no local paths, and file times from the commit.
+    flags:
+      - -trimpath
+    mod_timestamp: "{{ .CommitTimestamp }}"
     goos:
       - linux
       - darwin
