@@ -436,9 +436,11 @@ data-release policy; successful HTML parsing is not a privacy classification.
 
 ### Stable pseudonyms and reversible mappings
 
-Responses restore a replacement only where it stands as a whole token: an
-alias such as `host62` is restored in `host62.` or `(host62)`, but not inside
-`host620` or `myhost62`. Streams hold back a possible replacement until the
+Short replacements, numbers and IP addresses are restored only where they
+stand as a whole token: an alias such as `host-k3x9q2` is restored in
+`host-k3x9q2.` or `(host-k3x9q2)`, but not inside `host-k3x9q20` or
+`myhost-k3x9q2`. Longer replacements, such as passwords, emails and
+placeholders, are restored wherever they appear. Streams hold back a possible replacement until the
 following character is known.
 
 Cover creates `~/.config/cover/pseudonym.key` with owner-only permissions.

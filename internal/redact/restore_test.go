@@ -291,3 +291,21 @@ func TestSafeStreamCutHoldsFakeUntilBoundaryIsKnown(t *testing.T) {
 		}
 	}
 }
+
+func TestLongFakesRestoreInsideWords(t *testing.T) {
+	store := NewStore()
+	fake, err := store.Map("s", "Hunter2Hunter2", nil, func(int) (string, error) { return "gHiC7anXagKp3Q", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := New(store, 0, RedactorOptions{})
+	got := string(r.RestoreForSession([]byte("x"+fake+"y"), "s"))
+	if got != "xHunter2Hunter2y" {
+		t.Fatalf("long fake inside a word was not restored: %q", got)
+	}
+	for fake, ambiguous := range map[string]bool{"host-k3x9q2": true, "1234567890123": true, "10.200.30.40": true, "fd12:3456::1": true, "alias-1z2x3c4": false} {
+		if ambiguousFake(fake) != ambiguous {
+			t.Errorf("ambiguousFake(%q)=%v", fake, !ambiguous)
+		}
+	}
+}

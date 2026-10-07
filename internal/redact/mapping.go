@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"index/suffixarray"
+	"net"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -366,6 +367,7 @@ func (s *Store) restorationSnapshot(session string) *restorationSnapshot {
 	keys := sortedFakeKeys(m.reverse)
 	literals := make([]string, 0, len(keys))
 	originals := make([]string, 0, len(keys))
+	var bounded []bool
 	numbers := make(map[string]string, len(m.numeric))
 	maxFakeLen := 0
 	for _, fake := range keys {
@@ -382,14 +384,31 @@ func (s *Store) restorationSnapshot(session string) *restorationSnapshot {
 			}
 			literals = append(literals, literal)
 			originals = append(originals, encodeKnownValue(encoding, original))
+			bounded = append(bounded, ambiguousFake(fake))
 			maxFakeLen = max(maxFakeLen, len(literal))
 		}
 	}
 	m.restore = &restorationSnapshot{
-		matcher:   newLiteralMatcher(literals, func(int) bool { return true }),
+		matcher:   newLiteralMatcher(literals, func(i int) bool { return bounded[i] }),
 		originals: originals, numbers: numbers, maxFakeLen: maxFakeLen,
 	}
 	return m.restore
+}
+
+// ambiguousFake reports whether a fake could also be part of other text: a
+// short alias such as host-k3x9q2, or a number or address, which is a
+// different value inside a longer one. Those are restored only as whole
+// words; longer fakes are restored wherever they appear.
+func ambiguousFake(fake string) bool {
+	if len(fake) < 12 || net.ParseIP(fake) != nil {
+		return true
+	}
+	for i := 0; i < len(fake); i++ {
+		if c := fake[i]; (c < '0' || c > '9') && c != '.' && c != '-' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) SessionStats() (sessions, entries int) {
