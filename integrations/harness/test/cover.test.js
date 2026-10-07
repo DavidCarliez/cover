@@ -390,3 +390,30 @@ test("extension registers routes and persists on/off without touching other prov
   await events.get("session_start")({}, ctx);
   assert.equal(indicators.at(-1), "\u{1F512}", "the configured provider remains routed through Cover without the binary");
 });
+
+test("an invalid saved provider does not stop other providers from routing through Cover", async () => {
+  const harness = indicatorHarness({ routes: { example: "", "bad provider": "", other: "/../x" } });
+  assert.ok(harness.registered.has("example"), "valid provider was not routed through Cover");
+  assert.equal(harness.registered.size, 1);
+  await harness.events.get("session_start")({}, harness.ctx);
+  assert.ok(harness.notices.some(({ message, level }) => level === "error" && /invalid provider name: bad provider/.test(message)));
+
+  const dir = mkdtempSync(join(tmpdir(), "cover-env-"));
+  const state = readState(join(dir, "harness.json"), { HOME: dir, COVER_PROVIDERS: "openai,bad provider" });
+  assert.deepEqual(state.routes, { openai: "/v1" });
+  assert.equal(state.invalid.length, 1);
+});
+
+test("doctor reports failed checks instead of only the exit status", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "cover-doctor-"));
+  const binary = join(dir, "cover");
+  writeFileSync(binary, "#!/bin/sh\necho 'FAIL  daemon: not running'\nexit 1\n", { mode: 0o755 });
+  const notices = [];
+  const commands = new Map();
+  createCoverExtension({
+    registerProvider() {}, unregisterProvider() {}, on() {},
+    registerCommand(name, command) { commands.set(name, command); },
+  }, { env: { HOME: dir, COVER_BIN: binary }, statePath: join(dir, "harness.json"), readStatus: () => ({ running: false, installed: true }) });
+  await commands.get("cover").handler("doctor", { ui: { notify(message, level) { notices.push({ message, level }); } } });
+  assert.match(notices.at(-1).message, /FAIL {2}daemon: not running/);
+});

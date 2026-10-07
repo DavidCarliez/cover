@@ -53,31 +53,51 @@ export function inferRoutes(upstream) {
   return {};
 }
 
+// parseStoredRoutes keeps every valid provider. An invalid entry is reported
+// instead of throwing, so one bad entry cannot stop the plugin from routing
+// the other providers through Cover.
+function parseStoredRoutes(tokens, invalid) {
+  const routes = {};
+  for (const token of tokens) {
+    try {
+      Object.assign(routes, parseProviderSpec(token));
+    } catch (error) {
+      invalid.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return routes;
+}
+
 export function readState(path, env = process.env) {
   let stored = {};
   try {
     stored = JSON.parse(readFileSync(path, "utf8"));
   } catch {}
+  if (!stored || typeof stored !== "object" || Array.isArray(stored)) stored = {};
 
+  const invalid = [];
   let routes = {};
   if (stored.routes && typeof stored.routes === "object" && !Array.isArray(stored.routes)) {
-    routes = parseProviderSpec(Object.entries(stored.routes).map(([key, value]) => `${key}=${value || "/"}`).join(","));
+    routes = parseStoredRoutes(Object.entries(stored.routes).map(([key, value]) => `${key}=${value || "/"}`), invalid);
   } else if (Array.isArray(stored.providers)) {
-    routes = parseProviderSpec(stored.providers.join(","));
+    routes = parseStoredRoutes(stored.providers.map(String), invalid);
   }
-  if (env.COVER_PROVIDERS) routes = parseProviderSpec(env.COVER_PROVIDERS);
+  if (env.COVER_PROVIDERS) routes = parseStoredRoutes(String(env.COVER_PROVIDERS).split(","), invalid);
 
   return {
     enabled: env.COVER_HARNESS_DISABLED ? false : stored.enabled !== false,
     autoFallback: stored.autoFallback === true,
     routes,
+    invalid,
   };
 }
 
 export function writeState(path, state) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temporary = `${path}.tmp`;
-  writeFileSync(temporary, `${JSON.stringify(state, null, 2)}\n`, { mode: 0o600 });
+  // A unique name keeps concurrent sessions from clobbering each other's write.
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
+  const { invalid: _invalid, ...stored } = state;
+  writeFileSync(temporary, `${JSON.stringify(stored, null, 2)}\n`, { mode: 0o600 });
   renameSync(temporary, path);
 }
 
@@ -87,6 +107,27 @@ export function proxyEndpoint(baseURL, path) {
 
 function binaryName(env) {
   return env.COVER_BIN || "cover";
+}
+
+function statusFromError(error, env) {
+  return {
+    installed: error?.code !== "ENOENT",
+    running: false,
+    base_url: env.COVER_BASE_URL || "http://127.0.0.1:8317",
+    error: error instanceof Error ? error.message : String(error),
+  };
+}
+
+// readCoverStatus does not block the session while the cover binary answers.
+export async function readCoverStatus(env = process.env) {
+  try {
+    const { stdout } = await execFileAsync(binaryName(env), ["status", "--json"], {
+      encoding: "utf8", env, timeout: 5000, maxBuffer: 1024 * 1024,
+    });
+    return { installed: true, ...JSON.parse(stdout) };
+  } catch (error) {
+    return statusFromError(error, env);
+  }
 }
 
 export function readCoverStatusSync(env = process.env) {
@@ -100,23 +141,27 @@ export function readCoverStatusSync(env = process.env) {
     });
     return { installed: true, ...JSON.parse(output) };
   } catch (error) {
-    return {
-      installed: error?.code !== "ENOENT",
-      running: false,
-      base_url: env.COVER_BASE_URL || "http://127.0.0.1:8317",
-      error: error instanceof Error ? error.message : String(error),
-    };
+    return statusFromError(error, env);
   }
 }
 
-async function runCover(args, env = process.env, timeout = 15000) {
-  const { stdout, stderr } = await execFileAsync(binaryName(env), args, {
-    encoding: "utf8",
-    env,
-    timeout,
-    maxBuffer: 1024 * 1024,
-  });
-  return `${stdout}${stderr}`.trim();
+// runCover returns the command's output. With allowFailure, a command that
+// exits non-zero, such as doctor reporting a failed check, still returns its
+// report instead of only the exit status.
+async function runCover(args, env = process.env, timeout = 15000, allowFailure = false) {
+  try {
+    const { stdout, stderr } = await execFileAsync(binaryName(env), args, {
+      encoding: "utf8",
+      env,
+      timeout,
+      maxBuffer: 1024 * 1024,
+    });
+    return `${stdout}${stderr}`.trim();
+  } catch (error) {
+    const report = `${error?.stdout || ""}${error?.stderr || ""}`.trim();
+    if (allowFailure && report && typeof error?.code === "number") return report;
+    throw error;
+  }
 }
 
 function shortMessage(value, limit = 3500) {
@@ -138,8 +183,10 @@ export function createCoverExtension(pi, options = {}) {
   const env = options.env || process.env;
   const savedStatePath = options.statePath || statePath(env);
   let state = readState(savedStatePath, env);
-  const readStatus = options.readStatus || (() => readCoverStatusSync(env));
-  let status = readStatus();
+  // The initial status is read synchronously so routes exist before the first
+  // request; later turns read it without blocking the session.
+  const readStatus = options.readStatus || (() => readCoverStatus(env));
+  let status = options.readStatus ? options.readStatus() : readCoverStatusSync(env);
   let bypassed = state.enabled && state.autoFallback && !status.running;
   const explicitBaseURL = env.COVER_BASE_URL;
   let baseURL = explicitBaseURL || status.base_url || "http://127.0.0.1:8317";
@@ -208,7 +255,7 @@ export function createCoverExtension(pi, options = {}) {
   applyRoutes();
 
   const reconcile = async (ctx) => {
-    status = readStatus();
+    status = await readStatus();
     if (!explicitBaseURL && !status.error && status.base_url) baseURL = status.base_url;
     let available = status.running;
     if (state.enabled && state.autoFallback && available) {
@@ -241,6 +288,9 @@ export function createCoverExtension(pi, options = {}) {
     // OMP resolves the initial model before it drains queued extension provider
     // overrides. Reapply and reselect here so the first request uses Cover too.
     await reconcile(ctx);
+    if (state.invalid.length > 0) {
+      notify(ctx, `Ignored invalid Cover provider settings: ${state.invalid.join("; ")}. Run /cover providers to set them again.`, "error");
+    }
     if (bypassed) {
       notify(ctx, `Cover is unavailable. Automatic fallback is enabled.\n${describeCoverage(ctx)}`, "warning");
       return;
@@ -305,6 +355,7 @@ export function createCoverExtension(pi, options = {}) {
               break;
             }
             state.routes = parseProviderSpec(spec);
+            state.invalid = [];
             save();
             applyRoutes();
             await refreshActiveModel(ctx);
@@ -323,7 +374,7 @@ export function createCoverExtension(pi, options = {}) {
             notify(ctx, bypassed ? "Cover daemon stopped; new turns connect directly without protection." : state.enabled ? "Cover daemon stopped; configured providers remain fail-closed." : "Cover daemon stopped.", "warning");
             break;
           case "doctor":
-            notify(ctx, (await runCover(["doctor"], env, 30000)) || "Cover doctor completed.");
+            notify(ctx, (await runCover(["doctor"], env, 30000, true)) || "Cover doctor completed.");
             break;
           case "monitor":
             notify(ctx, (await runCover(["monitor", "--follow=false", "-n", "10"], env)) || "No recent Cover activity.");
