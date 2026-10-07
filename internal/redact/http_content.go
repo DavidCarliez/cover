@@ -965,18 +965,31 @@ func transformCookiePair(segment string, policy httpContentPolicy) (string, erro
 	if err != nil {
 		return "", err
 	}
+	newName, err := callHTTPBody(policy.Text, name)
+	if err != nil {
+		return "", err
+	}
+	if newName != name && !validHTTPHeaderName(newName) {
+		// Percent-encoding keeps a placeholder a valid cookie-name token.
+		newName = url.QueryEscape(newName)
+	}
+	if newName != name && (!validHTTPHeaderName(newName) || newName[0] == ':') {
+		return "", unsafeHTTPContentError()
+	}
 	transformed, err := callHTTPTransform(policy, selectorCookies, name, decoded, policy.HasCookies)
 	if err != nil {
 		return "", err
 	}
-	if transformed == decoded {
+	if transformed == decoded && newName == name {
 		return segment, nil
 	}
-	encoded, err := encodeCookieValue(transformed, quoted)
-	if err != nil {
-		return "", err
+	encoded := rawValue
+	if transformed != decoded {
+		if encoded, err = encodeCookieValue(transformed, quoted); err != nil {
+			return "", err
+		}
 	}
-	return segment[:leading] + pair[:equals+1] + encoded + segment[trailing:], nil
+	return segment[:leading] + newName + pair[len(name):equals+1] + encoded + segment[trailing:], nil
 }
 
 func decodeCookieValue(value string) (string, bool, error) {
@@ -1147,16 +1160,36 @@ func transformParameterString(raw, selector string, policy httpContentPolicy, re
 			if nameErr != nil || valueErr != nil {
 				return "", false, unsafeHTTPContentError()
 			}
-			transformed, transformErr := callHTTPTransform(policy, selector, name, value, required)
-			if transformErr != nil {
-				return "", false, transformErr
+			// Names and value-less parameters can carry data too, for example
+			// ?AKIA... or a token used as a key, so detectors inspect them.
+			newName, nameErr := callHTTPBody(policy.Text, name)
+			if nameErr != nil {
+				return "", false, nameErr
 			}
-			if transformed != value {
+			if newName != name {
+				rawName = url.QueryEscape(newName)
+			}
+			transformed := value
+			if equals >= 0 {
+				var transformErr error
+				transformed, transformErr = callHTTPTransform(policy, selector, name, value, required)
+				if transformErr != nil {
+					return "", false, transformErr
+				}
+			}
+			switch {
+			case transformed != value:
 				out.WriteString(rawName)
 				out.WriteByte('=')
 				out.WriteString(url.QueryEscape(transformed))
 				changed = true
-			} else {
+			case newName != name:
+				out.WriteString(rawName)
+				if equals >= 0 {
+					out.WriteString(part[equals:])
+				}
+				changed = true
+			default:
 				out.WriteString(part)
 			}
 		}

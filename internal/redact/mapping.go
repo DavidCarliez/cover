@@ -305,20 +305,29 @@ func (s *Store) restorationSnapshot(session string) *restorationSnapshot {
 	}
 
 	keys := sortedFakeKeys(m.reverse)
-	originals := make([]string, len(keys))
+	literals := make([]string, 0, len(keys))
+	originals := make([]string, 0, len(keys))
 	numbers := make(map[string]string, len(m.numeric))
 	maxFakeLen := 0
-	for i, fake := range keys {
-		originals[i] = m.reverse[fake]
+	for _, fake := range keys {
+		original := m.reverse[fake]
 		if m.numeric[fake] {
-			numbers[fake] = originals[i]
+			numbers[fake] = original
 		}
-		if len(fake) > maxFakeLen {
-			maxFakeLen = len(fake)
+		// A fake that a response or URL percent-encoded, such as a
+		// placeholder in a query string, restores to the encoded original.
+		for _, encoding := range []string{"", "query", "path"} {
+			literal := encodeKnownValue(encoding, fake)
+			if encoding != "" && literal == fake {
+				continue
+			}
+			literals = append(literals, literal)
+			originals = append(originals, encodeKnownValue(encoding, original))
+			maxFakeLen = max(maxFakeLen, len(literal))
 		}
 	}
 	m.restore = &restorationSnapshot{
-		matcher:   newLiteralMatcher(keys, func(int) bool { return true }),
+		matcher:   newLiteralMatcher(literals, func(int) bool { return true }),
 		originals: originals, numbers: numbers, maxFakeLen: maxFakeLen,
 	}
 	return m.restore

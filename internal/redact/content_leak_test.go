@@ -177,3 +177,31 @@ func TestCurlProseAndShellCompositionAreNotRejected(t *testing.T) {
 		}
 	}
 }
+
+func TestDetectorsInspectParameterAndCookieNames(t *testing.T) {
+	d, err := detectors.NewRegexDetector([]string{"aws_access_key"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	akia := "AKIA" + "IOSFODNN7EXAMPLE"
+	r := New(NewStore(), 0, RedactorOptions{FieldRules: []FieldRule{queryAliasRule("token")}}, d)
+	for _, text := range []string{
+		"https://x.example/?" + akia,
+		"https://x.example/?a=1&" + akia + "=1",
+		"GET /?" + akia + " HTTP/1.1\nHost: x\n",
+		"GET / HTTP/1.1\nHost: x\nCookie: " + akia + "=1; theme=dark\n",
+		`<a href="https://x.example/?` + akia + `">open</a>`,
+	} {
+		body, _ := json.Marshal(map[string]string{"input": text})
+		result, err := r.Transform(body, "s", false, "allow")
+		if err != nil {
+			t.Fatalf("rejected %q: %v", text, err)
+		}
+		if strings.Contains(string(result.Body), akia) {
+			t.Fatalf("leaked: %s", result.Body)
+		}
+		if restored := string(r.RestoreForSession(result.Body, "s")); restored != string(body) {
+			t.Fatalf("round trip changed %s to %s", body, restored)
+		}
+	}
+}
