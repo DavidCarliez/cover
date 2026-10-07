@@ -29,6 +29,17 @@ func (d *fakeContextDetector) DetectWithContext(ctx context.Context, text string
 	return nil
 }
 
+// redactBody transforms body in the default session, as the proxy does for
+// a request without a session header.
+func redactBody(tb testing.TB, r *Redactor, body []byte) ([]byte, []string) {
+	tb.Helper()
+	result, err := r.Transform(body, "", false, "allow")
+	if err != nil {
+		tb.Fatalf("Transform: %v", err)
+	}
+	return result.Body, result.Categories
+}
+
 func newTestRedactor(t *testing.T) *Redactor {
 	t.Helper()
 	d, err := detectors.NewRegexDetector([]string{"aws_access_key", "email"}, nil)
@@ -45,7 +56,7 @@ func TestRedact_JSONRoundTrip(t *testing.T) {
 	// re-serialization; this keeps the raw-string round-trip comparison below valid.
 	body := `{"messages":[{"content":"my key is AKIAIOSFODNN7EXAMPLE, email alice@example.com","role":"user"}]}`
 
-	redacted, categories := r.Redact([]byte(body))
+	redacted, categories := redactBody(t, r, []byte(body))
 
 	if strings.Contains(string(redacted), "AKIAIOSFODNN7EXAMPLE") {
 		t.Errorf("redacted body still contains secret: %s", redacted)
@@ -77,30 +88,11 @@ func TestRedact_JSONRoundTrip(t *testing.T) {
 	}
 }
 
-func TestRedact_NonJSONText(t *testing.T) {
-	r := newTestRedactor(t)
-
-	body := "my key is AKIAIOSFODNN7EXAMPLE"
-	redacted, categories := r.Redact([]byte(body))
-
-	if strings.Contains(string(redacted), "AKIAIOSFODNN7EXAMPLE") {
-		t.Errorf("redacted body still contains secret: %s", redacted)
-	}
-	if len(categories) != 1 || categories[0] != "aws_access_key" {
-		t.Errorf("unexpected categories: %v", categories)
-	}
-
-	restored := r.Restore(redacted)
-	if string(restored) != body {
-		t.Errorf("restore mismatch:\n got: %s\nwant: %s", restored, body)
-	}
-}
-
 func TestRedact_SameValueSamePlaceholder(t *testing.T) {
 	r := newTestRedactor(t)
 
 	body := `{"a":"AKIAIOSFODNN7EXAMPLE","b":"AKIAIOSFODNN7EXAMPLE"}`
-	redacted, _ := r.Redact([]byte(body))
+	redacted, _ := redactBody(t, r, []byte(body))
 
 	var obj map[string]string
 	if err := json.Unmarshal(redacted, &obj); err != nil {
@@ -115,7 +107,7 @@ func TestRedact_ContextDetectorReceivesBudgetDeadline(t *testing.T) {
 	fake := &fakeContextDetector{}
 	r := New(NewStore(), 4*time.Second, RedactorOptions{}, fake)
 
-	r.Redact([]byte(`{"a":"hello"}`))
+	redactBody(t, r, []byte(`{"a":"hello"}`))
 
 	if !fake.sawDeadline {
 		t.Errorf("expected ContextDetector to receive a context with a deadline when llmBudget > 0")
@@ -126,7 +118,7 @@ func TestRedact_ContextDetectorNoDeadlineWithoutBudget(t *testing.T) {
 	fake := &fakeContextDetector{}
 	r := New(NewStore(), 0, RedactorOptions{}, fake)
 
-	r.Redact([]byte(`{"a":"hello"}`))
+	redactBody(t, r, []byte(`{"a":"hello"}`))
 
 	if fake.sawDeadline {
 		t.Errorf("expected no deadline on context when llmBudget == 0")
@@ -143,7 +135,7 @@ func TestRedact_SkipsProtocolFields(t *testing.T) {
 		"messages": [{"role": "user", "content": "my key is ` + secret + `"}]
 	}`
 
-	redacted, categories := r.Redact([]byte(body))
+	redacted, categories := redactBody(t, r, []byte(body))
 
 	var obj map[string]any
 	if err := json.Unmarshal(redacted, &obj); err != nil {
@@ -174,7 +166,7 @@ func TestRedact_NoMatches(t *testing.T) {
 	r := newTestRedactor(t)
 
 	body := `{"messages":[{"content":"hello world","role":"user"}]}`
-	redacted, categories := r.Redact([]byte(body))
+	redacted, categories := redactBody(t, r, []byte(body))
 
 	if string(redacted) != body {
 		t.Errorf("expected unchanged body, got %s", redacted)

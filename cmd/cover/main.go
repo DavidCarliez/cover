@@ -332,23 +332,41 @@ func testCmd() *cobra.Command {
   ]
 }`
 
-			redactedBody, categories := redactor.Redact([]byte(sample))
-
-			fmt.Println("Original request body:")
-			fmt.Println(sample)
-
-			fmt.Println("\nRedacted body (this is what the remote LLM sees):")
-			fmt.Println(string(redactedBody))
-
-			fmt.Printf("\nDetected categories: %v\n", categories)
-
-			restored := redactor.Restore(redactedBody)
-			fmt.Println("\nRestored body (this is what would be returned to the agent if echoed back):")
-			fmt.Println(string(restored))
-
+			// Use the proxy's own transform and restoration path.
+			const session = "cover-test"
+			defer redactor.EndSession(session)
+			result, err := redactor.Transform([]byte(sample), session, false, cfg.Media.Images)
+			if err != nil {
+				return fmt.Errorf("transforming the sample request: %w", err)
+			}
+			out := cmd.OutOrStdout()
+			fmt.Fprintln(out, "Original request body:")
+			fmt.Fprintln(out, sample)
+			if result.Blocked {
+				fmt.Fprintln(out, "\nThe local policy blocks this request; nothing would be sent upstream.")
+				return nil
+			}
+			fmt.Fprintln(out, "\nProtected body (this is what the remote LLM sees):")
+			fmt.Fprintln(out, string(result.Body))
+			fmt.Fprintf(out, "\nDetected categories: %v\n", uniqueStrings(result.Categories))
+			restored := redactor.RestoreResponseForSession(result.Body, "application/json", session)
+			fmt.Fprintln(out, "\nRestored body (this is what would be returned to the agent if echoed back):")
+			fmt.Fprintln(out, string(restored))
 			return nil
 		},
 	}
+}
+
+func uniqueStrings(values []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func inspectCmd() *cobra.Command {
@@ -774,15 +792,7 @@ func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
 	}
 
 	var llmBudget time.Duration
-	opts := redact.RedactorOptions{
-		SkipLLMIfRegexMatched: cfg.Detectors.LLMFallback.SkipIfRegexMatched,
-		LLMConcurrency:        cfg.Detectors.LLMFallback.Concurrency,
-		LLMBatchSize:          cfg.Detectors.LLMFallback.BatchSize,
-		FieldRules:            fieldRules,
-	}
-	if cfg.Cache.Enabled {
-		opts.Cache = redact.NewDetectionCache(cfg.Cache.MaxEntries)
-	}
+	opts := redact.RedactorOptions{FieldRules: fieldRules}
 
 	if cfg.Detectors.LLMFallback.Enabled {
 		if det, llmCleanup, ok := startLLMFallback(cfg.Detectors.LLMFallback); ok {

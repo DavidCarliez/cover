@@ -88,9 +88,7 @@ func benchRedactor(b *testing.B) *Redactor {
 	if err != nil {
 		b.Fatalf("NewRegexDetector: %v", err)
 	}
-	return New(NewStore(), 0, RedactorOptions{
-		Cache: NewDetectionCache(10000),
-	}, d)
+	return New(NewStore(), 0, RedactorOptions{}, d)
 }
 
 func BenchmarkRedact_SmallChat(b *testing.B) {
@@ -98,7 +96,7 @@ func BenchmarkRedact_SmallChat(b *testing.B) {
 	body := benchFixtures.SmallChat
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r.Redact(body)
+		redactBody(b, r, body)
 	}
 }
 
@@ -107,7 +105,7 @@ func BenchmarkRedact_Chat20Msg(b *testing.B) {
 	body := benchFixtures.Chat20Msg
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r.Redact(body)
+		redactBody(b, r, body)
 	}
 }
 
@@ -116,7 +114,7 @@ func BenchmarkRedact_LargeSystem(b *testing.B) {
 	body := benchFixtures.LargeSystem
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r.Redact(body)
+		redactBody(b, r, body)
 	}
 }
 
@@ -125,7 +123,7 @@ func BenchmarkRedact_NoMatch(b *testing.B) {
 	body := benchFixtures.NoMatch
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r.Redact(body)
+		redactBody(b, r, body)
 	}
 }
 
@@ -134,18 +132,7 @@ func BenchmarkRedact_WithSecrets(b *testing.B) {
 	body := benchFixtures.WithSecrets
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		r.Redact(body)
-	}
-}
-
-func BenchmarkRedact_Chat20Msg_Cached(b *testing.B) {
-	r := benchRedactor(b)
-	body := benchFixtures.Chat20Msg
-	// Warm cache.
-	r.Redact(body)
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		r.Redact(body)
+		redactBody(b, r, body)
 	}
 }
 

@@ -29,8 +29,8 @@ func TestContentPairsKeepControlCharactersOnOneLine(t *testing.T) {
 func TestContentJSONRetainsBlockedStateAndOutboundBody(t *testing.T) {
 	event := activity.ContentEvent{
 		Blocked: true,
-		Caught: []activity.ContentCapture{{Original: "original", Replacement: "replacement"}},
-		Sent: json.RawMessage(`{"input":"replacement"}`),
+		Caught:  []activity.ContentCapture{{Original: "original", Replacement: "replacement"}},
+		Sent:    json.RawMessage(`{"input":"replacement"}`),
 	}
 	var out bytes.Buffer
 	if err := writeContentEvent(&out, event, true); err != nil {

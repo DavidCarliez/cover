@@ -1,7 +1,6 @@
 package proxy
 
 import (
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -24,9 +23,7 @@ func benchProxy(b *testing.B) (*Proxy, []byte) {
 	if err != nil {
 		b.Fatalf("NewRegexDetector: %v", err)
 	}
-	redactor := redact.New(redact.NewStore(), 0, redact.RedactorOptions{
-		Cache: redact.NewDetectionCache(10000),
-	}, d)
+	redactor := redact.New(redact.NewStore(), 0, redact.RedactorOptions{}, d)
 	p, err := New(upstream.URL, redactor, nil, Options{})
 	if err != nil {
 		b.Fatalf("New: %v", err)
@@ -77,23 +74,4 @@ func BenchmarkProxy_ServeHTTP_Chat20Msg_Cached(b *testing.B) {
 			b.Fatalf("status = %d", rec.Code)
 		}
 	}
-}
-
-// BenchFixtureChat20Msg exposes the 20-message chat fixture for proxy benchmarks.
-func BenchmarkProxy_GuardNoteOverhead(b *testing.B) {
-	d, _ := detectors.NewRegexDetector([]string{"aws_access_key"}, nil)
-	store := redact.NewStore()
-	r := redact.New(store, 0, redact.RedactorOptions{Cache: redact.NewDetectionCache(1000)}, d)
-	body := []byte(fmt.Sprintf(`{"model":"claude","messages":[{"role":"user","content":"key %s"}]}`, "AKIAIOSFODNN7EXAMPLE"))
-
-	b.Run("Redact", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			r.Redact(body)
-		}
-	})
-	b.Run("RedactForProxy", func(b *testing.B) {
-		for i := 0; i < b.N; i++ {
-			r.RedactForProxy(body)
-		}
-	})
 }

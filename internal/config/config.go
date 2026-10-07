@@ -76,7 +76,8 @@ type UpstreamTimeoutsConfig struct {
 	ResponseIdleTimeoutMS   int `yaml:"response_idle_timeout_ms"`
 }
 
-// CacheConfig configures the in-memory redaction result cache.
+// CacheConfig is accepted for compatibility with existing configuration
+// files and is ignored: the proxy inspects every request in full.
 type CacheConfig struct {
 	Enabled    bool `yaml:"enabled"`
 	MaxEntries int  `yaml:"max_entries"`

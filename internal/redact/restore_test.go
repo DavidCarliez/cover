@@ -38,7 +38,7 @@ func TestRestoreResponsePreservesEncryptedOnlyJSONExactly(t *testing.T) {
 func TestRestoreResponsePreservesLargeJSONNumbersWhenRestoring(t *testing.T) {
 	r := newTestRedactor(t)
 	secret := "customer@example.com"
-	redacted, _ := r.Redact([]byte(secret))
+	redacted := r.store.PlaceholderFor(secret)
 	body := []byte(fmt.Sprintf(`{"sequence_number":9007199254740993,"text":%q}`, redacted))
 
 	restored := r.RestoreResponse(body, "application/json")
@@ -143,7 +143,7 @@ func TestRestoreResponse_JSONEscapesQuotes(t *testing.T) {
 func TestRestoreResponseDoesNotAlterEncryptedContent(t *testing.T) {
 	r := newTestRedactor(t)
 	secret := "customer@example.com"
-	redacted, _ := r.Redact([]byte(secret))
+	redacted := r.store.PlaceholderFor(secret)
 	fake := string(redacted)
 	body, err := json.Marshal(map[string]any{
 		"output_text": fake,
@@ -198,7 +198,7 @@ func TestRestoreSSEEvent_JSONEscapesQuotes(t *testing.T) {
 func TestRestoreSSEEventPreservesCRLF(t *testing.T) {
 	r := newTestRedactor(t)
 	secret := "customer@example.com"
-	redacted, _ := r.Redact([]byte(secret))
+	redacted := r.store.PlaceholderFor(secret)
 	fake := string(redacted)
 	payload, err := json.Marshal(map[string]string{"text": fake})
 	if err != nil {

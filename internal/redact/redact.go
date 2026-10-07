@@ -1,19 +1,12 @@
 package redact
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
-	"regexp"
 	"sort"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
-
-var placeholderRe = regexp.MustCompile(placeholderOpen + `([0-9a-f]{8})` + placeholderClose)
 
 // ContextDetector is an optional interface a Detector can implement to
 // receive a context with a deadline. The Redactor uses this to bound the
@@ -23,39 +16,25 @@ type ContextDetector interface {
 	DetectWithContext(ctx context.Context, text string) []detectors.Match
 }
 
-// BatchContextDetector is an optional interface for detectors that can score
-// multiple strings in one remote call.
-type BatchContextDetector interface {
-	DetectBatchWithContext(ctx context.Context, texts []string) [][]detectors.Match
-}
-
 // RedactorOptions configures optional redactor behavior.
 type RedactorOptions struct {
-	Cache                 *DetectionCache
-	SkipLLMIfRegexMatched bool
-	LLMConcurrency        int
-	LLMBatchSize          int
-	FieldRules            []FieldRule
+	FieldRules []FieldRule
 }
 
 // Redactor scans and rewrites request/response bodies using a set of
 // detectors backed by a shared mapping Store.
 type Redactor struct {
-	detectors             []detectors.Detector
-	store                 *Store
-	llmBudget             time.Duration
-	cache                 *DetectionCache
-	skipLLMIfRegexMatched bool
-	llmConcurrency        int
-	llmBatchSize          int
-	fieldRules            []FieldRule
-	textSelectors         []textSelector
-	fieldRulesValid       bool
-	hasKeyRules           bool
-	hasHeaderRules        bool
-	hasCookieRules        bool
-	hasQueryRules         bool
-	hasFormRules          bool
+	detectors       []detectors.Detector
+	store           *Store
+	llmBudget       time.Duration
+	fieldRules      []FieldRule
+	textSelectors   []textSelector
+	fieldRulesValid bool
+	hasKeyRules     bool
+	hasHeaderRules  bool
+	hasCookieRules  bool
+	hasQueryRules   bool
+	hasFormRules    bool
 }
 
 // New creates a Redactor backed by store, applying the given detectors in
@@ -63,12 +42,6 @@ type Redactor struct {
 // available to detectors implementing ContextDetector; pass 0 if no such
 // detectors are configured.
 func New(store *Store, llmBudget time.Duration, opts RedactorOptions, dets ...detectors.Detector) *Redactor {
-	if opts.LLMConcurrency <= 0 {
-		opts.LLMConcurrency = 4
-	}
-	if opts.LLMBatchSize <= 0 {
-		opts.LLMBatchSize = 8
-	}
 	fieldRules := append([]FieldRule(nil), opts.FieldRules...)
 	sort.SliceStable(fieldRules, func(i, j int) bool {
 		if fieldRules[i].Priority != fieldRules[j].Priority {
@@ -105,77 +78,18 @@ func New(store *Store, llmBudget time.Duration, opts RedactorOptions, dets ...de
 		}
 	}
 	return &Redactor{
-		detectors:             dets,
-		store:                 store,
-		llmBudget:             llmBudget,
-		cache:                 opts.Cache,
-		skipLLMIfRegexMatched: opts.SkipLLMIfRegexMatched,
-		llmConcurrency:        opts.LLMConcurrency,
-		llmBatchSize:          opts.LLMBatchSize,
-		fieldRules:            fieldRules,
-		textSelectors:         buildTextSelectors(fieldRules),
-		fieldRulesValid:       fieldRulesValid,
-		hasKeyRules:           hasKeyRules,
-		hasHeaderRules:        hasHeaderRules,
-		hasCookieRules:        hasCookieRules,
-		hasQueryRules:         hasQueryRules,
-		hasFormRules:          hasFormRules,
+		detectors:       dets,
+		store:           store,
+		llmBudget:       llmBudget,
+		fieldRules:      fieldRules,
+		textSelectors:   buildTextSelectors(fieldRules),
+		fieldRulesValid: fieldRulesValid,
+		hasKeyRules:     hasKeyRules,
+		hasHeaderRules:  hasHeaderRules,
+		hasCookieRules:  hasCookieRules,
+		hasQueryRules:   hasQueryRules,
+		hasFormRules:    hasFormRules,
 	}
-}
-
-// Redact scans body for sensitive substrings and returns the rewritten body
-// along with the list of categories that were matched (for logging).
-func (r *Redactor) Redact(body []byte) ([]byte, []string) {
-	return r.redactBody(body, false)
-}
-
-// RedactForProxy is like Redact but injects the Cover system note when
-// redactions occurred.
-func (r *Redactor) RedactForProxy(body []byte) ([]byte, []string) {
-	return r.redactBody(body, true)
-}
-
-func (r *Redactor) redactBody(body []byte, injectNote bool) ([]byte, []string) {
-	ctx := context.Background()
-	if r.llmBudget > 0 {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, r.llmBudget)
-		defer cancel()
-	}
-
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-
-	var data any
-	if err := dec.Decode(&data); err != nil {
-		redacted, cats := r.redactString(ctx, string(body), false, nil)
-		return []byte(redacted), cats
-	}
-
-	llmResults := r.prefetchLLMResults(ctx, data)
-
-	var categories []string
-	changed := false
-	walked := r.walk(ctx, data, &categories, false, &changed, llmResults)
-
-	if !changed {
-		if injectNote && len(categories) > 0 {
-			// categories only set when changed; unreachable
-		}
-		return body, categories
-	}
-
-	if injectNote && len(categories) > 0 {
-		if root, ok := walked.(map[string]any); ok {
-			injectGuardNoteIntoData(root, categories)
-		}
-	}
-
-	out, err := json.Marshal(walked)
-	if err != nil {
-		return body, categories
-	}
-	return out, categories
 }
 
 // Restore replaces any placeholder tokens in data with the original values
@@ -196,18 +110,6 @@ func (r *Redactor) RestoreForSession(data []byte, session string) []byte {
 	return restored
 }
 
-func (r *Redactor) StreamReserve(session string) int {
-	snapshot := r.store.restorationSnapshot(session)
-	if snapshot == nil {
-		return 0
-	}
-	max := snapshot.maxFakeLen
-	if max <= 1 {
-		return 0
-	}
-	return max - 1
-}
-
 func (r *Redactor) EndSession(session string) { r.store.DeleteSession(session) }
 
 // HasMappingsForSession reports whether response restoration has any work for
@@ -223,232 +125,4 @@ func (r *Redactor) SafeStreamCut(data []byte, session string) int {
 		return len(data)
 	}
 	return snapshot.safeCut(data)
-}
-
-var llmSkipKeys = map[string]bool{
-	"system": true,
-}
-
-type llmWork struct {
-	hash [32]byte
-	text string
-}
-
-func (r *Redactor) prefetchLLMResults(ctx context.Context, data any) map[[32]byte][]detectors.Match {
-	var llmDet ContextDetector
-	var batchDet BatchContextDetector
-	for _, det := range r.detectors {
-		if cd, ok := det.(ContextDetector); ok {
-			llmDet = cd
-			batchDet, _ = det.(BatchContextDetector)
-			break
-		}
-	}
-	if llmDet == nil {
-		return nil
-	}
-
-	seen := make(map[[32]byte]string)
-	r.collectLLMStrings(data, false, seen)
-	if len(seen) == 0 {
-		return nil
-	}
-
-	work := make([]llmWork, 0, len(seen))
-	for hash, text := range seen {
-		if isTestDataContext(text) {
-			continue
-		}
-		if r.skipLLMIfRegexMatched && r.regexMatched(text) {
-			continue
-		}
-		work = append(work, llmWork{hash: hash, text: text})
-	}
-	if len(work) == 0 {
-		return nil
-	}
-
-	results := make(map[[32]byte][]detectors.Match, len(work))
-
-	if batchDet != nil && r.llmBatchSize > 1 {
-		for i := 0; i < len(work); i += r.llmBatchSize {
-			end := i + r.llmBatchSize
-			if end > len(work) {
-				end = len(work)
-			}
-			batch := work[i:end]
-			texts := make([]string, len(batch))
-			for j, w := range batch {
-				texts[j] = w.text
-			}
-			batchMatches := batchDet.DetectBatchWithContext(ctx, texts)
-			for j, w := range batch {
-				if j < len(batchMatches) {
-					results[w.hash] = batchMatches[j]
-				}
-			}
-		}
-		return results
-	}
-
-	sem := make(chan struct{}, r.llmConcurrency)
-	var wg sync.WaitGroup
-	var mu sync.Mutex
-
-	for _, w := range work {
-		wg.Add(1)
-		go func(w llmWork) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			matches := llmDet.DetectWithContext(ctx, w.text)
-			mu.Lock()
-			results[w.hash] = matches
-			mu.Unlock()
-		}(w)
-	}
-	wg.Wait()
-	return results
-}
-
-func (r *Redactor) regexMatched(text string) bool {
-	for _, det := range r.detectors {
-		if _, ok := det.(ContextDetector); ok {
-			continue
-		}
-		if len(det.Detect(text)) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func (r *Redactor) collectLLMStrings(v any, skipLLM bool, seen map[[32]byte]string) {
-	r.collectLLMStringsAt(v, skipLLM, seen, protocolBusiness, "")
-}
-
-func (r *Redactor) collectLLMStringsAt(v any, skipLLM bool, seen map[[32]byte]string, parent protocolObjectKind, edge string) {
-	switch val := v.(type) {
-	case string:
-		if skipLLM {
-			return
-		}
-		hash := contentHash(val)
-		if _, ok := seen[hash]; !ok {
-			seen[hash] = val
-		}
-	case map[string]any:
-		kind := classifyProtocolObject(val, parent, edge)
-		for key, vv := range val {
-			if opaqueProtocolField(kind, val, key, vv) || protocolRoutingField(kind, val, key) {
-				continue
-			}
-			r.collectLLMStringsAt(vv, skipLLM || llmSkipKeys[key], seen, kind, key)
-		}
-	case []any:
-		for _, vv := range val {
-			r.collectLLMStringsAt(vv, skipLLM, seen, parent, edge)
-		}
-	}
-}
-
-func (r *Redactor) walk(ctx context.Context, v any, categories *[]string, skipLLM bool, changed *bool, llmResults map[[32]byte][]detectors.Match) any {
-	return r.walkAt(ctx, v, categories, skipLLM, changed, llmResults, protocolBusiness, "")
-}
-
-func (r *Redactor) walkAt(ctx context.Context, v any, categories *[]string, skipLLM bool, changed *bool, llmResults map[[32]byte][]detectors.Match, parent protocolObjectKind, edge string) any {
-	switch val := v.(type) {
-	case string:
-		redacted, cats := r.redactString(ctx, val, skipLLM, llmResults)
-		*categories = append(*categories, cats...)
-		if redacted != val {
-			*changed = true
-		}
-		return redacted
-	case map[string]any:
-		kind := classifyProtocolObject(val, parent, edge)
-		for key, vv := range val {
-			if opaqueProtocolField(kind, val, key, vv) || protocolRoutingField(kind, val, key) {
-				continue
-			}
-			val[key] = r.walkAt(ctx, vv, categories, skipLLM || llmSkipKeys[key], changed, llmResults, kind, key)
-		}
-		return val
-	case []any:
-		for i, vv := range val {
-			val[i] = r.walkAt(ctx, vv, categories, skipLLM, changed, llmResults, parent, edge)
-		}
-		return val
-	default:
-		return v
-	}
-}
-
-func (r *Redactor) redactString(ctx context.Context, s string, skipLLM bool, llmResults map[[32]byte][]detectors.Match) (string, []string) {
-	hash := contentHash(s)
-	if r.cache != nil {
-		if redacted, cats, ok := r.cache.Get(hash, skipLLM); ok {
-			return redacted, cats
-		}
-	}
-
-	var all []detectors.Match
-	var regexMatched bool
-	for _, det := range r.detectors {
-		if cd, ok := det.(ContextDetector); ok {
-			if skipLLM || isTestDataContext(s) {
-				continue
-			}
-			if r.skipLLMIfRegexMatched && regexMatched {
-				continue
-			}
-			if llmResults != nil {
-				if matches, ok := llmResults[hash]; ok {
-					all = append(all, matches...)
-					continue
-				}
-			}
-			all = append(all, cd.DetectWithContext(ctx, s)...)
-			continue
-		}
-		matches := det.Detect(s)
-		if len(matches) > 0 {
-			regexMatched = true
-		}
-		all = append(all, matches...)
-	}
-	all = filterTestExemptMatches(s, all)
-	if len(all) == 0 {
-		if r.cache != nil {
-			r.cache.Put(hash, skipLLM, s, nil)
-		}
-		return s, nil
-	}
-
-	sort.Slice(all, func(i, j int) bool {
-		if all[i].Start != all[j].Start {
-			return all[i].Start < all[j].Start
-		}
-		return all[i].End > all[j].End
-	})
-
-	var b strings.Builder
-	var categories []string
-	last := 0
-	for _, m := range all {
-		if m.Start < last {
-			continue
-		}
-		b.WriteString(s[last:m.Start])
-		b.WriteString(r.store.PlaceholderFor(m.Value))
-		categories = append(categories, m.Category)
-		last = m.End
-	}
-	b.WriteString(s[last:])
-	redacted := b.String()
-
-	if r.cache != nil {
-		r.cache.Put(hash, skipLLM, redacted, categories)
-	}
-	return redacted, categories
 }
