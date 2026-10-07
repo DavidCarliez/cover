@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
 const leakMarker = "SEKRETVALUE42"
@@ -111,5 +113,67 @@ func TestFreeTextAssignmentRoundTripsEscapedValue(t *testing.T) {
 	restored := string(r.RestoreForSession([]byte(out), "s"))
 	if restored != text {
 		t.Fatalf("restored %q, want %q", restored, text)
+	}
+}
+
+func TestCurlCommandsProtectEveryCredentialForm(t *testing.T) {
+	d, err := detectors.NewRegexDetector([]string{"aws_access_key"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	akia := "AKIA" + "IOSFODNN7EXAMPLE"
+	for name, tc := range map[string]struct {
+		rule   FieldRule
+		text   string
+		secret string
+	}{
+		"combined short flags": {headerAliasRule("Authorization"), "curl -sSH 'Authorization: Bearer " + leakMarker + "' https://x.example", leakMarker},
+		"basic auth user":      {headerAliasRule("Authorization"), "curl -u admin:" + leakMarker + " https://x.example", leakMarker},
+		"oauth2 bearer":        {headerAliasRule("Authorization"), "curl --oauth2-bearer " + leakMarker + " https://x.example", leakMarker},
+		"multipart form field": {formAliasRule("password"), "curl -F 'password=" + leakMarker + "' https://x.example", leakMarker},
+		"get with data":        {queryAliasRule("token"), "curl -G -d 'token=" + leakMarker + "' https://x.example", leakMarker},
+		"uppercase scheme":     {queryAliasRule("token"), "curl 'HTTPS://x.example/?token=" + leakMarker + "'", leakMarker},
+		"header without colon": {FieldRule{}, "curl -H 'X-Key " + akia + "' https://x.example", akia},
+		"shell pipeline":       {headerAliasRule("Authorization"), "curl -s -H 'Authorization: Bearer " + leakMarker + "' https://x.example | jq .", leakMarker},
+		"dynamic word":         {headerAliasRule("Authorization"), "curl -H \"Authorization: Bearer " + leakMarker + "\" \"$BASE/x\"", leakMarker},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var rules []FieldRule
+			if tc.rule.Name != "" {
+				rules = append(rules, tc.rule)
+			}
+			r := New(NewStore(), 0, RedactorOptions{FieldRules: rules}, d)
+			body, _ := json.Marshal(map[string]string{"input": tc.text})
+			result, err := r.Transform(body, "s", false, "allow")
+			if err != nil {
+				t.Fatalf("rejected %q: %v", tc.text, err)
+			}
+			if strings.Contains(string(result.Body), tc.secret) {
+				t.Fatalf("leaked: %s", result.Body)
+			}
+			restored := string(r.RestoreForSession(result.Body, "s"))
+			if !strings.Contains(restored, tc.secret) {
+				t.Fatalf("did not restore: %s", restored)
+			}
+		})
+	}
+}
+
+func TestCurlProseAndShellCompositionAreNotRejected(t *testing.T) {
+	r := structuredPolicyRedactor(keyAliasRule("password"), headerAliasRule("Authorization"))
+	for _, text := range []string{
+		"curl is not installed; use wget",
+		"curl -s https://api.example.com/items | jq .",
+		"curl 8.5.0 (x86_64-pc-linux-gnu) libcurl/8.5.0",
+		"curl -X POST \"$API_URL\" && echo done",
+	} {
+		body, _ := json.Marshal(map[string]string{"input": text})
+		result, err := r.Transform(body, "s", false, "allow")
+		if err != nil {
+			t.Fatalf("rejected %q: %v", text, err)
+		}
+		if got := decodePolicyJSON(t, result.Body).(map[string]any)["input"]; got != text {
+			t.Errorf("changed %q to %q", text, got)
+		}
 	}
 }

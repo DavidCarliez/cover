@@ -1,6 +1,7 @@
 package redact
 
 import (
+	"errors"
 	"mime"
 	"strings"
 )
@@ -11,9 +12,14 @@ type curlWord struct {
 	dynamic    bool
 }
 
+// errCurlUnsupported marks a command the curl parser cannot rewrite safely,
+// such as shell composition or a dynamic word that would need requoting.
+var errCurlUnsupported = errors.New("unsupported curl command")
+
 // protectCurlContent protects literal HTTP values in commands that an agent
 // stores in conversation history after response restoration. It never executes
-// a shell or reads @file arguments. Unsupported shell composition fails closed.
+// a shell or reads @file arguments. A command it cannot rewrite is left to the
+// plain-text pipeline, which protects values in place without requoting.
 func protectCurlContent(text string, policy httpContentPolicy) (string, bool, error) {
 	left, right := trimHTTPOuterSpace(text)
 	if strings.HasPrefix(text[left:right], "$ ") {
@@ -25,9 +31,26 @@ func protectCurlContent(text string, policy httpContentPolicy) (string, bool, er
 	if !policy.hasWork() {
 		return text, true, nil
 	}
-	words, err := parseCurlWords(text, left+4, right)
+	output, err := transformCurlCommand(text, left, right, policy)
+	if errors.Is(err, errCurlUnsupported) {
+		return text, false, nil
+	}
 	if err != nil {
 		return "", true, err
+	}
+	return output, true, nil
+}
+
+func transformCurlCommand(text string, left, right int, policy httpContentPolicy) (string, error) {
+	words, err := parseCurlWords(text, left+4, right)
+	if err != nil {
+		return "", errCurlUnsupported
+	}
+	query := false
+	for _, word := range words {
+		if word.value == "-G" || word.value == "--get" {
+			query = true
+		}
 	}
 	mediaType := ""
 	for index := 0; index < len(words); index++ {
@@ -36,7 +59,7 @@ func protectCurlContent(text string, policy httpContentPolicy) (string, bool, er
 			if name, field, found := strings.Cut(value, ":"); found && strings.EqualFold(strings.TrimSpace(name), "Content-Type") {
 				parsed, _, parseErr := mime.ParseMediaType(strings.TrimSpace(field))
 				if parseErr != nil {
-					return "", true, unsafeHTTPContentError()
+					return "", errCurlUnsupported
 				}
 				mediaType = parsed
 			}
@@ -50,20 +73,40 @@ func protectCurlContent(text string, policy httpContentPolicy) (string, bool, er
 		transformed := value
 		switch option {
 		case "-H", "--header":
-			if name, field, found := strings.Cut(value, ":"); found {
-				name = strings.TrimSpace(name)
-				if !validHTTPHeaderName(name) {
-					return "", true, unsafeHTTPContentError()
-				}
-				trimmed := strings.TrimSpace(field)
-				mapped, transformErr := transformHTTPHeader(httpHeader{name: name, lowerName: strings.ToLower(name), value: trimmed}, policy)
-				if transformErr != nil || structuralHTTPHeader(strings.ToLower(name)) && mapped != trimmed {
-					return "", true, unsafeHTTPContentError()
-				}
-				if mapped != trimmed {
-					transformed = name + ": " + mapped
-				}
+			name, field, found := strings.Cut(value, ":")
+			if !found {
+				transformed, err = callHTTPBody(policy.Text, value)
+				break
 			}
+			name = strings.TrimSpace(name)
+			if !validHTTPHeaderName(name) {
+				return "", errCurlUnsupported
+			}
+			trimmed := strings.TrimSpace(field)
+			mapped, transformErr := transformHTTPHeader(httpHeader{name: name, lowerName: strings.ToLower(name), value: trimmed}, policy)
+			if transformErr != nil || structuralHTTPHeader(strings.ToLower(name)) && mapped != trimmed {
+				return "", unsafeHTTPContentError()
+			}
+			if mapped != trimmed {
+				transformed = name + ": " + mapped
+			}
+		case "-u", "--user", "--oauth2-bearer", "--proxy-user", "-U":
+			// Credentials become an Authorization header, so an explicit
+			// Authorization policy owns them; detectors inspect them otherwise.
+			if policy.HeaderSelected != nil && policy.HeaderSelected("Authorization") {
+				transformed, err = transformHTTPHeader(httpHeader{name: "Authorization", lowerName: "authorization", value: value}, policy)
+			} else {
+				transformed, err = callHTTPBody(policy.Text, value)
+			}
+		case "-F", "--form", "--form-string":
+			name, field, found := strings.Cut(value, "=")
+			if !found || option != "--form-string" && (strings.HasPrefix(field, "@") || strings.HasPrefix(field, "<")) {
+				transformed, err = callHTTPBody(policy.Text, value)
+				break
+			}
+			mapped, transformErr := callHTTPTransform(policy, selectorFormFields, name, field, policy.HasForm)
+			err = transformErr
+			transformed = name + "=" + mapped
 		case "-b", "--cookie":
 			if strings.Contains(value, "=") {
 				transformed, err = transformHTTPHeader(httpHeader{name: "Cookie", lowerName: "cookie", value: value}, policy)
@@ -80,6 +123,8 @@ func protectCurlContent(text string, policy httpContentPolicy) (string, bool, er
 				transformed, err = transformHTTPBody(value, "application/json", policy)
 			} else if mediaType == "text/html" || mediaType == "application/xhtml+xml" || strings.HasPrefix(trimmed, "<") {
 				transformed, err = transformHTTPBody(value, "text/html", policy)
+			} else if query && strings.Contains(value, "=") {
+				transformed, _, err = transformParameterString(value, selectorQueryParams, policy, policy.HasQuery)
 			} else if strings.Contains(value, "=") || mediaType == "application/x-www-form-urlencoded" {
 				transformed, _, err = transformParameterString(value, selectorFormFields, policy, policy.HasForm)
 			} else {
@@ -94,27 +139,37 @@ func protectCurlContent(text string, policy httpContentPolicy) (string, bool, er
 				transformed, err = callHTTPBody(policy.Text, value)
 			}
 		default:
-			if strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://") {
+			if hasHTTPScheme(value) {
 				transformed, _, err = transformURLQuery(value, policy, false)
 			} else {
 				transformed, err = callHTTPBody(policy.Text, value)
 			}
 		}
 		if err != nil {
-			return "", true, unsafeHTTPContentError()
+			return "", unsafeHTTPContentError()
 		}
 		if transformed != value {
 			if word.dynamic {
-				return "", true, unsafeHTTPContentError()
+				return "", errCurlUnsupported
 			}
 			quoted := "'" + strings.ReplaceAll(prefix+transformed, "'", "'\\''") + "'"
 			edits = append(edits, httpEdit{start: word.start, end: word.end, replacement: quoted})
 		}
 		index += consumed
 	}
-	output, err := applyHTTPEdits(text, 0, len(text), edits)
-	return output, true, err
+	return applyHTTPEdits(text, 0, len(text), edits)
 }
+
+func hasHTTPScheme(value string) bool {
+	return len(value) >= 7 && strings.EqualFold(value[:7], "http://") ||
+		len(value) >= 8 && strings.EqualFold(value[:8], "https://")
+}
+
+// curlValueOptions take the next word as their value.
+const curlValueOptions = "HbduUeFAxoT"
+
+// curlFlagOptions take no value and may precede a value option in one word.
+const curlFlagOptions = "sSkvLfiIgGjJNOqRZ46"
 
 func curlOption(words []curlWord, index int) (option, value, prefix string, consumed int) {
 	word := words[index].value
@@ -122,11 +177,24 @@ func curlOption(words []curlWord, index int) (option, value, prefix string, cons
 		if name, field, found := strings.Cut(word, "="); found {
 			return name, field, name + "=", 0
 		}
-	} else if len(word) > 2 && (strings.HasPrefix(word, "-H") || strings.HasPrefix(word, "-b") || strings.HasPrefix(word, "-d")) {
-		return word[:2], word[2:], word[:2], 0
+	} else if len(word) > 2 && word[0] == '-' && word[1] != '-' {
+		// Combined short flags such as -sSH take the next word for their
+		// final value option.
+		last := word[len(word)-1]
+		combined := strings.IndexByte(curlValueOptions, last) >= 0
+		for i := 1; combined && i < len(word)-1; i++ {
+			combined = strings.IndexByte(curlFlagOptions, word[i]) >= 0
+		}
+		if combined && index+1 < len(words) {
+			return "-" + string(last), words[index+1].value, "", 1
+		}
+		if strings.IndexByte("Hbdu", word[1]) >= 0 {
+			return word[:2], word[2:], word[:2], 0
+		}
 	}
 	switch word {
-	case "-H", "--header", "-b", "--cookie", "--url", "-d", "--data", "--data-raw", "--data-binary", "--json", "--data-urlencode":
+	case "-H", "--header", "-b", "--cookie", "--url", "-d", "--data", "--data-raw", "--data-binary", "--json", "--data-urlencode",
+		"-u", "--user", "-U", "--proxy-user", "--oauth2-bearer", "-F", "--form", "--form-string":
 		if index+1 < len(words) {
 			return word, words[index+1].value, "", 1
 		}
