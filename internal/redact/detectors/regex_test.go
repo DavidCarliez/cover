@@ -1,6 +1,9 @@
 package detectors
 
-import "testing"
+import (
+	"regexp"
+	"testing"
+)
 
 func TestRegexDetector_Builtin(t *testing.T) {
 	// Built at runtime so secret scanners don't flag a contiguous sk_live_ literal.
@@ -107,5 +110,48 @@ func TestNewRegexDetector_KeyOnlyRule(t *testing.T) {
 	}
 	if _, err := NewRegexDetector(nil, []CustomPattern{{Name: "mixed", Keys: []string{"password"}, Pattern: "secret"}}); err == nil {
 		t.Fatal("expected keys combined with pattern to fail")
+	}
+}
+
+func TestBuiltinTriggersNeverSkipRealMatches(t *testing.T) {
+	// Token samples are concatenated so secret scanners do not flag them.
+	samples := map[string][]string{
+		"aws_access_key":             {"key AKIAIOSFODNN7EXAMPLE here"},
+		"aws_secret_key":             {"AWS_SECRET_ACCESS_KEY = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEYab"},
+		"gcp_api_key":                {"AIza" + "SyA-1234567890abcdefghijklmnopqrstu"},
+		"github_token":               {"ghp" + "_abcdefghijklmnopqrstuvwxyz0123456789"},
+		"gitlab_token":               {"glpat" + "-abcdefghij0123456789"},
+		"slack_token":                {"xox" + "b-1234567890-abcdef"},
+		"stripe_key":                 {"sk_" + "live_abcdefghijklmnopqrstuvwx"},
+		"anthropic_key":              {"sk-" + "ant-abcdefghijklmnopqrstu"},
+		"private_key_block":          {"-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"},
+		"jwt":                        {"eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc_DEF-123"},
+		"generic_api_key_assignment": {"API_KEY=abcdef123456", "Password: hunter2hunter2", "PWD=abcdefgh"},
+		"email":                      {"mail alice@corp.example.com"},
+		"ssn":                        {"ssn 123-45-6789", "ssn 123 45 6789"},
+		"credit_card":                {"card 4111 1111 1111 1111", "card 4111111111111111"},
+		"phone_us":                   {"call 212-555-0123 now", "call 212.555.0123", "call (212) 555-0123", "call +1 212 555 0123"},
+		"phone_intl":                 {"call +442071838750"},
+		"iban":                       {"iban DE89370400440532013000"},
+		"ipv4":                       {"host 10.20.30.40"},
+		"ipv6":                       {"host 2001:db8::1"},
+		"domain":                     {"see db.corp.example.com"},
+		"uuid":                       {"id 550e8400-e29b-41d4-a716-446655440000"},
+		"url":                        {"open HTTPS://example.com/x"},
+	}
+	for category, texts := range samples {
+		pattern := regexp.MustCompile(builtinPatterns[category])
+		d, err := NewRegexDetector([]string{category}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, text := range texts {
+			if !pattern.MatchString(text) {
+				t.Fatalf("%s sample %q does not match its pattern", category, text)
+			}
+			if len(d.Detect(text)) == 0 {
+				t.Errorf("%s: detector skipped %q, which its pattern matches", category, text)
+			}
+		}
 	}
 }

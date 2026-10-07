@@ -80,7 +80,7 @@ var builtinPatterns = map[string]string{
 	"hostname":                   `\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\b`,
 	"domain":                     `\b(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}\b`,
 	"uuid":                       `\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b`,
-	"url":                        `https?://[^\s<>"']+`,
+	"url":                        `(?i:https?)://[^\s<>"']+`,
 }
 
 // BuiltinCategories returns the names of all available built-in categories.
@@ -108,8 +108,10 @@ type namedPattern struct {
 	triggers   []string
 }
 
-// builtinTriggers lists cheap literal substrings that must appear for a pattern
-// to possibly match. Patterns with no triggers always run.
+// builtinTriggers lists cheap literal substrings, compared case-insensitively,
+// of which at least one must appear for a pattern to possibly match. Every
+// trigger list must be implied by its pattern; a list that is not would
+// silently skip real matches. Patterns with no triggers always run.
 var builtinTriggers = map[string][]string{
 	"aws_access_key":             {"AKIA"},
 	"aws_secret_key":             {"aws_secret"},
@@ -123,9 +125,9 @@ var builtinTriggers = map[string][]string{
 	"jwt":                        {"eyJ"},
 	"generic_api_key_assignment": {"api", "key", "secret", "token", "password", "passwd", "pwd"},
 	"email":                      {"@"},
-	"ssn":                        {"-"},
+	"ssn":                        {},
 	"credit_card":                {},
-	"phone_us":                   {"(", "+1"},
+	"phone_us":                   {},
 	"phone_intl":                 {"+"},
 	"iban":                       {},
 	"ipv4":                       {"."},
@@ -255,8 +257,12 @@ func (d *RegexDetector) Name() string { return "regex" }
 // overlaps when substituting placeholders.
 func (d *RegexDetector) Detect(text string) []Match {
 	var matches []Match
+	lower := ""
 	for _, p := range d.patterns {
-		if !triggersMatch(text, p.triggers) {
+		if len(p.triggers) > 0 && lower == "" {
+			lower = strings.ToLower(text)
+		}
+		if !triggersMatch(lower, p.triggers) {
 			continue
 		}
 		validate := postValidators[p.category]
@@ -288,40 +294,18 @@ func (d *RegexDetector) Detect(text string) []Match {
 	return matches
 }
 
-func triggersMatch(text string, triggers []string) bool {
+// triggersMatch reports whether lower, the lowercased text, contains a
+// trigger.
+func triggersMatch(lower string, triggers []string) bool {
 	if len(triggers) == 0 {
 		return true
 	}
-	lower := strings.ToLower(text)
 	for _, trig := range triggers {
 		if strings.Contains(lower, strings.ToLower(trig)) {
 			return true
 		}
 	}
 	return false
-}
-
-// extractTriggers pulls a few literal runs from a regex pattern for fast-path
-// filtering. Custom patterns without literals run unconditionally.
-func extractTriggers(pattern string) []string {
-	var literals []string
-	var cur strings.Builder
-	flush := func() {
-		if cur.Len() >= 3 {
-			literals = append(literals, cur.String())
-		}
-		cur.Reset()
-	}
-	for _, r := range pattern {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-' || r == '_':
-			cur.WriteRune(r)
-		default:
-			flush()
-		}
-	}
-	flush()
-	return literals
 }
 
 func digitsOnly(s string) string {
