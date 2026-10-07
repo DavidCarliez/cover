@@ -284,3 +284,18 @@ func TestMalformedStructuredTextIsProtectedNotRejected(t *testing.T) {
 		t.Fatalf("empty JSON script rejected: %v", err)
 	}
 }
+
+func TestHTMLFieldValuesKeepAttributeKeyRules(t *testing.T) {
+	for _, tc := range []struct{ key, html string }{
+		{"content", `<html><head><meta name="description" content="` + leakMarker + `"></head><body>x</body></html>`},
+		{"value", `<html><body><object><param name="movie" value="` + leakMarker + `"></object></body></html>`},
+		{"value", `<html><body><data value="` + leakMarker + `">x</data></body></html>`},
+	} {
+		r := structuredPolicyRedactor(keyAliasRule(tc.key))
+		body, _ := json.Marshal(map[string]string{"input": tc.html})
+		result, err := r.Transform(body, "s", false, "allow")
+		if err != nil || strings.Contains(string(result.Body), leakMarker) {
+			t.Fatalf("keys:[%s] did not protect %s: %v %s", tc.key, tc.html, err, result.Body)
+		}
+	}
+}

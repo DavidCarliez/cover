@@ -26,7 +26,9 @@ type htmlContentPolicy struct {
 	// TextNodes is for restoration: generated aliases live wholly in one
 	// text node, so the cached literal replacer need not join inline runs.
 	TextNodes bool
-	Field     func(names []string, value string) (string, error)
+	// Field receives a form or metadata value with the names identifying its
+	// field, and the attribute holding it, if any.
+	Field     func(names []string, attribute, value string) (string, error)
 	Attribute func(name, value string) (string, error)
 	Text      func(text string) ([]htmlTextEdit, error)
 	JSON      func(text string) (string, error)
@@ -513,7 +515,7 @@ func transformHTMLDocument(text string, policy htmlContentPolicy, budget *htmlIn
 			value := before
 			fieldValue := attr.Key == "value" || attr.Key == "content" && node.Data == "meta"
 			if field && fieldValue && node.Data != "textarea" && node.Data != "select" && policy.Field != nil {
-				value, err = policy.Field(names, before)
+				value, err = policy.Field(names, attr.Key, before)
 			} else if policy.Attribute != nil {
 				name := attr.Key
 				if attr.Namespace != "" {
@@ -530,7 +532,7 @@ func transformHTMLDocument(text string, policy htmlContentPolicy, budget *htmlIn
 		if field && (node.Data == "textarea" || node.Data == "option") && policy.Field != nil {
 			nodes := htmlTextNodes(node)
 			before := joinHTMLNodes(nodes)
-			value, fieldErr := policy.Field(names, before)
+			value, fieldErr := policy.Field(names, "", before)
 			if fieldErr != nil || !utf8.ValidString(value) || strings.IndexByte(value, 0) >= 0 {
 				return "", unsafeHTMLContentError()
 			}

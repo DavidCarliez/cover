@@ -34,7 +34,7 @@ func (r *Redactor) restoreHTMLString(text string, snapshot *restorationSnapshot,
 	output, handled, err := protectHTMLContent(text, htmlContentPolicy{
 		Force:     force,
 		TextNodes: true,
-		Field:     func(_ []string, value string) (string, error) { return restoreValue(value) },
+		Field:     func(_ []string, _ string, value string) (string, error) { return restoreValue(value) },
 		Attribute: func(name, value string) (string, error) {
 			if err := check(); err != nil {
 				return "", err

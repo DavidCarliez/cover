@@ -73,11 +73,17 @@ func (r *Redactor) transformHTMLString(ctx context.Context, text, session string
 	}
 	output, handled, err := protectHTMLContent(text, htmlContentPolicy{
 		Force: force,
-		Field: func(names []string, value string) (string, error) {
+		Field: func(names []string, attribute, value string) (string, error) {
 			if err := check(); err != nil {
 				return "", err
 			}
-			if rule, ok := r.htmlFieldRule(names); ok {
+			rule, ok := r.htmlFieldRule(names)
+			// A keys rule naming the attribute itself, such as content,
+			// still applies; the higher priority wins when both match.
+			if attributeRule, matched := r.fieldRule(selectorKeys, attribute); attribute != "" && matched && (!ok || fieldRuleBefore(attributeRule, rule)) {
+				rule, ok = attributeRule, true
+			}
+			if ok {
 				return r.transformSelectedString(value, session, occupied, result, changed, rule, capture)
 			}
 			return unselected(value)
@@ -152,7 +158,7 @@ func (r *Redactor) collectHTMLOccupied(text string, out map[string]struct{}, dep
 	}
 	_, handled, _ := protectHTMLContent(text, htmlContentPolicy{
 		Force: force,
-		Field: func(_ []string, value string) (string, error) {
+		Field: func(_ []string, _ string, value string) (string, error) {
 			collect(value)
 			return value, nil
 		},

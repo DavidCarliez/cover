@@ -113,7 +113,7 @@ func TestHTMLContentDoesNotJoinSeparateBlocks(t *testing.T) {
 }
 
 func TestHTMLContentFormIdentitiesAndLaterLabels(t *testing.T) {
-	selectField := func(names []string, value string) (string, error) {
+	selectField := func(names []string, _, value string) (string, error) {
 		for _, name := range names {
 			switch strings.ToLower(name) {
 			case "credential", "password", "access phrase", "customer_name":
@@ -149,7 +149,7 @@ func TestHTMLContentFormIdentitiesAndLaterLabels(t *testing.T) {
 }
 
 func TestHTMLContentTextareaAndSelectValues(t *testing.T) {
-	policy := htmlContentPolicy{Field: func(names []string, value string) (string, error) {
+	policy := htmlContentPolicy{Field: func(names []string, _, value string) (string, error) {
 		for _, name := range names {
 			if name == "credential" {
 				return "opaque-" + value, nil
@@ -244,7 +244,7 @@ func TestHTMLContentRestorationCannotCreateMarkup(t *testing.T) {
 	replacement := `Alice <img src=x> & "Bob"`
 	policy := htmlContentPolicy{
 		TextNodes: true,
-		Field: func(_ []string, value string) (string, error) {
+		Field: func(_ []string, _, value string) (string, error) {
 			return strings.ReplaceAll(value, "OPAQUE", replacement), nil
 		},
 		Attribute: func(_ string, value string) (string, error) {
@@ -403,7 +403,7 @@ func TestHTMLContentRejectsInvalidPoliciesWithoutLeakingErrors(t *testing.T) {
 		{Text: func(string) ([]htmlTextEdit, error) { return []htmlTextEdit{{-1, 2, "private"}}, nil }},
 		{Text: func(string) ([]htmlTextEdit, error) { return []htmlTextEdit{{0, 9, "private"}, {1, 4, "private"}}, nil }},
 		{Attribute: func(string, string) (string, error) { return "", errors.New("amber-owl") }},
-		{Field: func([]string, string) (string, error) { return "", errors.New("amber-owl") }},
+		{Field: func([]string, string, string) (string, error) { return "", errors.New("amber-owl") }},
 	}
 	for index, policy := range policies {
 		out, handled, err := protectHTMLContent(`<p title="amber-owl">amber-owl</p><input value="amber-owl">`, policy)
