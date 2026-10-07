@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"math"
 	"strings"
 	"testing"
 )
@@ -12,6 +13,7 @@ func FuzzSSERestorationIgnoresChunkBoundaries(f *testing.F) {
 	f.Add("hello ", " world", 7, true)
 	f.Add("", "", 0, false)
 	f.Add("{\"value\":\"", "\"}", 31, true)
+	f.Add("x", "y", math.MinInt, true)
 	r, fake := aliasPseudonym(f, "fuzz")
 	f.Fuzz(func(t *testing.T, before, after string, split int, tool bool) {
 		var stream string
@@ -34,10 +36,11 @@ func FuzzSSERestorationIgnoresChunkBoundaries(f *testing.F) {
 			return out.String(), err
 		}
 		whole, wholeErr := render(stream)
-		if split < 0 {
-			split = -split
-		}
+		// Take the remainder first: negating math.MinInt overflows.
 		split %= len(stream) + 1
+		if split < 0 {
+			split += len(stream) + 1
+		}
 		parts, partsErr := render(stream[:split], stream[split:])
 		if (wholeErr == nil) != (partsErr == nil) || whole != parts {
 			t.Fatalf("split at %d changed output:\nwhole=%q %v\nparts=%q %v", split, whole, wholeErr, parts, partsErr)
