@@ -9,6 +9,8 @@ permissions:
 
 jobs:
   publish:
+    # Publish only what is on main.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -20,12 +22,18 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
 
+      # Trusted publishing authenticates this workflow to npm with GitHub's
+      # OIDC token, so no long-lived npm token is stored. It needs npm 11.5.1
+      # or later and the trusted publisher set on npmjs.com for this workflow.
+      - name: Update npm
+        run: npm install --global npm@^11.5.1
+
       - name: Test package
         working-directory: integrations/harness
-        run: npm test
+        run: |
+          npm run check
+          npm test
 
       - name: Publish package
         working-directory: integrations/harness
         run: npm publish --access public --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
