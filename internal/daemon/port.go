@@ -35,32 +35,17 @@ func WaitForListen(addr string, timeout time.Duration) error {
 	return fmt.Errorf("timed out waiting for %s", addr)
 }
 
-// StopOrFind stops the process in the pidfile, or finds a listener on
-// listenAddr when the pidfile is missing (e.g. after an unclean exit).
-func StopOrFind(pidPath, listenAddr string) error {
-	if err := Stop(pidPath); err == nil {
-		return nil
-	}
-	pid, err := FindListenerPID(listenAddr)
-	if err != nil {
-		return fmt.Errorf("Cover is not running (no pidfile)")
-	}
-	return stopPID(pidPath, pid)
-}
-
-// StopOrFindAndWait stops the process in the pidfile or a listener on
-// listenAddr, waits for it to exit, and returns nil when nothing was running.
+// StopOrFindAndWait stops Cover, identified by the pidfile or by the
+// listener on listenAddr, waits for it to exit, and returns nil when Cover
+// is not running. A process that is not Cover is never signalled.
 func StopOrFindAndWait(pidPath, listenAddr string, timeout time.Duration) error {
-	pid, err := Read(pidPath)
-	if err != nil {
-		var findErr error
-		pid, findErr = FindListenerPID(listenAddr)
-		if findErr != nil {
-			return nil
+	pid, found := RunningPID(pidPath, listenAddr)
+	if !found {
+		if AddrInUse(listenAddr) {
+			if _, err := FindListenerPID(listenAddr); err == nil {
+				return fmt.Errorf("another program is listening on %s; it is not Cover, so it was not stopped", listenAddr)
+			}
 		}
-	}
-	if !IsRunning(pid) {
-		_ = Remove(pidPath)
 		return nil
 	}
 	if err := stopPID(pidPath, pid); err != nil {
@@ -74,4 +59,23 @@ func StopOrFindAndWait(pidPath, listenAddr string, timeout time.Duration) error 
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("timed out waiting for Cover (pid %d) to stop", pid)
+}
+
+// RunningPID returns the running Cover process from the pidfile or, after an
+// unclean exit, from the listener on listenAddr. A stale pidfile, including
+// one whose pid now belongs to another program, is removed.
+func RunningPID(pidPath, listenAddr string) (int, bool) {
+	if pid, err := Read(pidPath); err == nil {
+		if IsCover(pid, listenAddr) {
+			return pid, true
+		}
+		_ = Remove(pidPath)
+	}
+	if pid, ok := ProbePID(listenAddr, time.Second); ok && IsRunning(pid) {
+		return pid, true
+	}
+	if pid, err := FindListenerPID(listenAddr); err == nil && IsCover(pid, listenAddr) {
+		return pid, true
+	}
+	return 0, false
 }

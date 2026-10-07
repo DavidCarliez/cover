@@ -17,6 +17,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"time"
 
 	"github.com/DavidCarliez/cover/internal/activity"
+	"github.com/DavidCarliez/cover/internal/daemon"
 	"github.com/DavidCarliez/cover/internal/redact"
 )
 
@@ -147,6 +149,12 @@ func New(upstream string, redactor *redact.Redactor, logger *log.Logger, opts Op
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path == activity.ContentEndpoint {
 		p.serveContentMonitor(w, r)
+		return
+	}
+	if r.URL.Path == daemon.HealthEndpoint && r.Method == http.MethodGet && loopbackRequest(r) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(daemon.Health{Service: "cover", PID: os.Getpid()})
 		return
 	}
 	started := time.Now()
@@ -316,12 +324,16 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.logRequest(resp.StatusCode, result.Transformed, categories, len(redactedBody), responseBytes, time.Since(started))
 }
 
-func (p *Proxy) serveContentMonitor(w http.ResponseWriter, r *http.Request) {
-	defer r.Body.Close()
+func loopbackRequest(r *http.Request) bool {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	ip := net.ParseIP(host)
+	return err == nil && ip != nil && ip.IsLoopback()
+}
+
+func (p *Proxy) serveContentMonitor(w http.ResponseWriter, r *http.Request) {
+	defer r.Body.Close()
 	provided := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	authorized := err == nil && ip != nil && ip.IsLoopback() && p.contentToken != "" &&
+	authorized := loopbackRequest(r) && p.contentToken != "" &&
 		subtle.ConstantTimeCompare([]byte(provided), []byte(p.contentToken)) == 1
 	if !authorized || p.contentHub == nil {
 		http.NotFound(w, r)

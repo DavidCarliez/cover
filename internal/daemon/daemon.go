@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
-	"time"
 )
 
 // PidFilePath returns the path to Cover's pidfile:
@@ -48,65 +46,11 @@ func Remove(path string) error {
 	return nil
 }
 
-// IsRunning reports whether a process with the given pid is alive.
-func IsRunning(pid int) bool {
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false
-	}
-	return process.Signal(syscall.Signal(0)) == nil
-}
-
-// Stop sends SIGTERM. The daemon removes its pidfile after draining requests.
-func Stop(path string) error {
-	pid, err := Read(path)
-	if err != nil {
-		return fmt.Errorf("Cover is not running (no pidfile)")
-	}
-	return stopPID(path, pid)
-}
-
-// StopIfRunning sends SIGTERM to the running process (if any), waits up to
-// timeout for it to exit, and removes the pidfile. Returns nil when nothing
-// was running.
-func StopIfRunning(path string, timeout time.Duration) error {
-	pid, err := Read(path)
-	if err != nil {
-		return nil
-	}
-	if !IsRunning(pid) {
-		_ = Remove(path)
-		return nil
-	}
-	return stopPIDAndWait(path, pid, timeout)
-}
-
 func stopPID(path string, pid int) error {
 	if !IsRunning(pid) {
 		_ = Remove(path)
 		return fmt.Errorf("Cover is not running (stale pidfile removed)")
 	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return err
-	}
-	if err := process.Signal(syscall.SIGTERM); err != nil {
-		return fmt.Errorf("sending SIGTERM to pid %d: %w", pid, err)
-	}
 	// Keep the pidfile while the daemon drains active requests.
-	return nil
-}
-
-func stopPIDAndWait(path string, pid int, timeout time.Duration) error {
-	if err := stopPID(path, pid); err != nil {
-		return err
-	}
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if !IsRunning(pid) {
-			return nil
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return fmt.Errorf("timed out waiting for Cover (pid %d) to stop", pid)
+	return terminate(pid)
 }

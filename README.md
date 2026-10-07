@@ -143,8 +143,15 @@ Stopping Cover does not change client configuration. A client still pointed at
 Cover will fail to connect until Cover is restarted or the client is pointed
 back to its direct provider or router.
 
+`stop`, `restart` and `update` only signal a process that is Cover: the
+listener must report that process on the loopback-only `/__cover/health`
+endpoint, or the process executable must be named `cover`. A stale pidfile,
+including one whose process ID now belongs to another program, is removed,
+and another program on Cover's port is never stopped.
+
 Stops and restarts drain active requests for up to 30 seconds, configurable
-with `shutdown_timeout_ms`. After that deadline, remaining connections close.
+with `shutdown_timeout_ms`. On Windows, which has no SIGTERM, `cover stop`
+ends the process without draining. After that deadline, remaining connections close.
 New connections can fail briefly during restart; this is not a zero-downtime
 handover. `cover status` and `cover doctor` report when the running daemon
 differs from the installed binary.

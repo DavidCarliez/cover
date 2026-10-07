@@ -307,14 +307,7 @@ func statusCmd() *cobra.Command {
 }
 
 func runningPID(pidPath, listenAddr string) (int, bool) {
-	if pid, err := daemon.Read(pidPath); err == nil && daemon.IsRunning(pid) {
-		return pid, true
-	}
-	if pid, err := daemon.FindListenerPID(listenAddr); err == nil && daemon.IsRunning(pid) {
-		return pid, true
-	}
-	_ = daemon.Remove(pidPath)
-	return 0, false
+	return daemon.RunningPID(pidPath, listenAddr)
 }
 
 func testCmd() *cobra.Command {
@@ -655,14 +648,11 @@ func startDetached() error {
 	if err != nil {
 		return err
 	}
-	if pid, err := daemon.Read(pidPath); err == nil && daemon.IsRunning(pid) {
-		return fmt.Errorf("Cover is already running (pid %d)", pid)
+	if pid, running := daemon.RunningPID(pidPath, cfg.Listen); running {
+		return fmt.Errorf("Cover is already running on %s (pid %d); use `cover stop`", cfg.Listen, pid)
 	}
 	if daemon.AddrInUse(cfg.Listen) {
-		if pid, err := daemon.FindListenerPID(cfg.Listen); err == nil {
-			return fmt.Errorf("Cover is already running on %s (pid %d); use `cover stop`", cfg.Listen, pid)
-		}
-		return fmt.Errorf("port %s is already in use", cfg.Listen)
+		return fmt.Errorf("port %s is already in use by another program", cfg.Listen)
 	}
 
 	exe, err := os.Executable()
@@ -696,9 +686,6 @@ func startDetached() error {
 	}
 
 	pid := cmd.Process.Pid
-	if recorded, err := daemon.Read(pidPath); err == nil {
-		pid = recorded
-	}
 
 	printStarted(os.Stdout, startDisplay{
 		Listen:   cfg.Listen,
