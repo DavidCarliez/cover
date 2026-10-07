@@ -178,20 +178,23 @@ func (k *knownValues) evictOldestLocked(n int) {
 }
 
 func (k *knownValues) current() *knownSnapshot {
+	now := k.now()
 	k.mu.RLock()
 	snapshot := k.snapshot
 	empty := len(k.values) == 0
+	swept := now.Sub(k.expired) < time.Minute
 	k.mu.RUnlock()
-	if snapshot != nil || empty {
+	if empty || snapshot != nil && swept {
 		return snapshot
 	}
 
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	// Expiry clears the snapshot when it removes a value.
+	k.expireLocked(now)
 	if k.snapshot != nil {
 		return k.snapshot
 	}
-	k.expireLocked(k.now())
 	if len(k.values) == 0 {
 		k.base, k.delta, k.pending, k.rebase = nil, nil, nil, false
 		return nil
@@ -270,25 +273,62 @@ func isJSONNumberText(text string) bool {
 	return first == '-' || first >= '0' && first <= '9'
 }
 
-// matches returns every protected original in text. Within each part the
-// spans are leftmost longest; overlaps between parts are resolved with all
-// other policy matches.
+// matches returns every protected original in text. Literals may overlap:
+// one that starts inside another is reported when it extends past it, and a
+// blocked literal is always reported, so the policy resolver sees every
+// protected byte and every block. Overlapping literals of the same rule are
+// merged into one span.
 func (s *knownSnapshot) matches(text string) []detectors.Match {
 	if s == nil {
 		return nil
 	}
 	var out []detectors.Match
 	for _, part := range s.parts {
+		var spans, blocks []detectors.Match
 		for pos := 0; ; {
-			start, end, index, ok := part.matcher.find(text, pos)
+			start, _, _, ok := part.matcher.find(text, pos)
 			if !ok {
 				break
 			}
-			match := part.templates[index]
-			match.Value, match.Start, match.End = text[start:end], start, end
-			out = append(out, match)
-			pos = end
+			pos = start + 1
+			end, index := -1, -1
+			part.matcher.eachAt(text, start, func(e, i int) {
+				if Action(part.templates[i].Action) == ActionBlock {
+					blocks = part.addSpan(blocks, text, start, e, i)
+				}
+				end, index = e, i
+			})
+			spans = part.addSpan(spans, text, start, end, index)
 		}
+		out = append(append(out, spans...), blocks...)
 	}
 	return out
+}
+
+// addSpan appends a literal unless the last span already covers it, and
+// extends the last span when both come from the same rule. Span ends
+// strictly increase, so the last span reaches furthest.
+func (m *knownMatcher) addSpan(spans []detectors.Match, text string, start, end, index int) []detectors.Match {
+	if n := len(spans); n > 0 && start < spans[n-1].End {
+		last := &spans[n-1]
+		if end <= last.End {
+			return spans
+		}
+		if sameKnownTemplate(*last, m.templates[index]) {
+			last.End, last.Value = end, text[last.Start:end]
+			return spans
+		}
+	}
+	return append(spans, m.match(text, start, end, index))
+}
+
+func (m *knownMatcher) match(text string, start, end, index int) detectors.Match {
+	match := m.templates[index]
+	match.Value, match.Start, match.End = text[start:end], start, end
+	return match
+}
+
+func sameKnownTemplate(a, b detectors.Match) bool {
+	return a.Category == b.Category && a.Rule == b.Rule && a.Action == b.Action &&
+		a.Generator == b.Generator && a.Priority == b.Priority && a.Encoding == b.Encoding
 }

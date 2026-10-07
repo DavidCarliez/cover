@@ -217,6 +217,75 @@ func TestKnownValuesExpireAndEvict(t *testing.T) {
 	}
 }
 
+func TestCachedKnownValuesStillExpire(t *testing.T) {
+	now := time.Unix(0, 0)
+	known := newKnownValues(10, time.Hour, func() time.Time { return now })
+	known.remember("first-value", detectors.Match{Rule: "r", Action: string(ActionRedact)})
+	if known.current().matches("first-value") == nil {
+		t.Fatal("value is not protected")
+	}
+	// Nothing new is remembered, so only expiry can drop the cached matcher.
+	now = now.Add(2 * time.Hour)
+	if snapshot := known.current(); snapshot != nil {
+		t.Fatalf("expired value is still protected: %+v", snapshot.matches("first-value"))
+	}
+	if len(known.values) != 0 {
+		t.Fatalf("expired value is still retained: %d", len(known.values))
+	}
+}
+
+func TestOverlappingKnownValuesExposeNoProtectedByte(t *testing.T) {
+	rule := func(name string, action Action) FieldRule {
+		generator := ""
+		if action == ActionPseudonymize {
+			generator = "secret"
+		}
+		return FieldRule{Name: name, Keys: []string{name}, Category: name, Action: string(action), Generator: generator, Priority: 220}
+	}
+	for _, together := range []bool{true, false} {
+		r := structuredPolicyRedactor(rule("a", ActionPseudonymize), rule("b", ActionPseudonymize))
+		if together {
+			// Learned in one request, both values share one matcher.
+			mustTransform(t, r, "s", []byte(`{"a":"alpha-secret-1","b":"secret-1-betaTAIL"}`))
+		} else {
+			mustTransform(t, r, "s", []byte(`{"a":"alpha-secret-1"}`))
+			r.store.known.current()
+			mustTransform(t, r, "s", []byte(`{"b":"secret-1-betaTAIL"}`))
+		}
+		out := mustTransform(t, r, "s", []byte(`{"messages":[{"role":"user","content":"x alpha-secret-1-betaTAIL y"}]}`))
+		for _, part := range []string{"alpha", "secret-1", "betaTAIL"} {
+			if strings.Contains(string(out.Body), part) {
+				t.Fatalf("together=%v: overlapping values exposed %q: %s", together, part, out.Body)
+			}
+		}
+	}
+
+	r := structuredPolicyRedactor(rule("a", ActionPseudonymize), rule("b", ActionBlock))
+	if res, _ := r.Transform([]byte(`{"a":"prefix-BLOCKME99-suffix","b":"BLOCKME99"}`), "s", false, "allow"); !res.Blocked {
+		t.Fatal("selected block value did not block")
+	}
+	for _, text := range []string{"x prefix-BLOCKME99-suffix y", "x BLOCKME99 y"} {
+		body := []byte(`{"messages":[{"role":"user","content":"` + text + `"}]}`)
+		if res := mustTransform(t, r, "s", body); !res.Blocked {
+			t.Fatalf("blocked value inside %q did not block: %s", text, res.Body)
+		}
+	}
+}
+
+func TestOverlappingKnownValuesOfOneRuleShareOneFake(t *testing.T) {
+	r := passwordKeyRedactor()
+	mustTransform(t, r, "s", []byte(`{"password":"alpha-secret-1","x":{"password":"secret-1-beta"}}`))
+	out := mustTransform(t, r, "s", []byte(`{"messages":[{"role":"user","content":"x alpha-secret-1-beta y"}]}`))
+	content := decodePolicyJSON(t, out.Body).(map[string]any)["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if strings.Contains(content, "secret") || strings.Count(content, " ") != 2 {
+		t.Fatalf("content=%q", content)
+	}
+	back := string(r.RestoreResponseForSession(out.Body, "application/json", "s"))
+	if !strings.Contains(back, "x alpha-secret-1-beta y") {
+		t.Fatalf("merged span did not restore: %s", back)
+	}
+}
+
 func must[T any](value T, err error) T {
 	if err != nil {
 		panic(err)

@@ -85,6 +85,25 @@ func (m *literalMatcher) longestAt(text string, start int) (int, int, bool) {
 	return end, index, end >= 0
 }
 
+// eachAt calls fn for every literal that starts at start and satisfies its
+// boundary requirement, shortest first.
+func (m *literalMatcher) eachAt(text string, start int, fn func(end, index int)) {
+	node := int32(0)
+	for i := start; i < len(text); i++ {
+		next, ok := m.nodes[node].next[text[i]]
+		if !ok {
+			return
+		}
+		node = next
+		if entry := m.nodes[node].entry; entry != 0 {
+			literal := int(entry - 1)
+			if !m.bounded[literal] || wordBoundaryMatch(text, start, i+1) {
+				fn(i+1, literal)
+			}
+		}
+	}
+}
+
 // find returns the leftmost-longest literal at or after from.
 func (m *literalMatcher) find(text string, from int) (start, end, index int, ok bool) {
 	for i := from; i < len(text); i++ {
