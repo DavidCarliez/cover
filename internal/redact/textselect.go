@@ -15,10 +15,14 @@ import (
 // `Authorization: Bearer x` in a log line. Parsers handle every structure they
 // recognize; this net protects the selected values in everything else.
 type textSelector struct {
-	rule  FieldRule
-	re    *regexp.Regexp
-	names map[string]bool // lowercase names for HTML field identities
-	part  *regexp.Regexp  // multipart form-data part with a selected name
+	rule FieldRule
+	re   *regexp.Regexp
+	// literals are the selected names, lowercased unless case-sensitive. A
+	// text that contains none of them cannot match, so the regular
+	// expressions are skipped. Nil means always scan.
+	literals []string
+	names    map[string]bool // lowercase names for HTML field identities
+	part     *regexp.Regexp  // multipart form-data part with a selected name
 }
 
 var (
@@ -64,6 +68,17 @@ func buildTextSelectors(rules []FieldRule) []textSelector {
 		alternatives := "(?:" + strings.Join(quoted, "|") + ")"
 		var pattern string
 		selector := textSelector{rule: rule}
+		caseSensitive := rule.CaseSensitive && !header
+		for _, name := range names {
+			if !isASCII(name) {
+				selector.literals = nil
+				break
+			}
+			if !caseSensitive {
+				name = strings.ToLower(name)
+			}
+			selector.literals = append(selector.literals, name)
+		}
 		if header {
 			pattern = flags + `(?:^|[\s'"])` + alternatives + `[ \t]*:[ \t]*` + textHeaderValue
 		} else {
@@ -93,6 +108,9 @@ func (r *Redactor) textSelectorMatches(text string) []detectors.Match {
 		fieldTags = textHTMLFieldTag.FindAllStringIndex(text, -1)
 	}
 	for _, selector := range r.textSelectors {
+		if !selector.mentioned(text) {
+			continue
+		}
 		for _, span := range selector.htmlFieldValues(text, fieldTags) {
 			matches = append(matches, selector.match(text, span[0], span[1]))
 		}
@@ -103,28 +121,123 @@ func (r *Redactor) textSelectorMatches(text string) []detectors.Match {
 				}
 			}
 		}
-		for _, loc := range selector.re.FindAllStringSubmatchIndex(text, -1) {
-			start, end, unquoted := -1, -1, false
-			for group := 1; group*2+1 < len(loc); group++ {
-				if loc[group*2] >= 0 {
-					start, end = loc[group*2], loc[group*2+1]
-					unquoted = group == 3 && len(selector.rule.Headers) == 0
-					break
+		// Assignments and header lines never span lines, so only lines that
+		// mention a selected name are scanned.
+		for _, line := range selector.mentioningLines(text) {
+			for _, loc := range selector.re.FindAllStringSubmatchIndex(text[line[0]:line[1]], -1) {
+				for i := range loc {
+					if loc[i] >= 0 {
+						loc[i] += line[0]
+					}
 				}
+				start, end, unquoted := -1, -1, false
+				for group := 1; group*2+1 < len(loc); group++ {
+					if loc[group*2] >= 0 {
+						start, end = loc[group*2], loc[group*2+1]
+						unquoted = group == 3 && len(selector.rule.Headers) == 0
+						break
+					}
+				}
+				if start < 0 || end <= start {
+					continue
+				}
+				value := text[start:end]
+				// Literals, shell variables and function calls are code, not values.
+				if unquoted && (value == "true" || value == "false" || value == "null" ||
+					value[0] == '$' || end < len(text) && text[end] == '(') {
+					continue
+				}
+				matches = append(matches, selector.match(text, start, end))
 			}
-			if start < 0 || end <= start {
-				continue
-			}
-			value := text[start:end]
-			// Literals, shell variables and function calls are code, not values.
-			if unquoted && (value == "true" || value == "false" || value == "null" ||
-				value[0] == '$' || end < len(text) && text[end] == '(') {
-				continue
-			}
-			matches = append(matches, selector.match(text, start, end))
 		}
 	}
 	return matches
+}
+
+// mentioningLines returns runs of consecutive lines that mention a name.
+func (selector textSelector) mentioningLines(text string) [][2]int {
+	if selector.literals == nil {
+		return [][2]int{{0, len(text)}}
+	}
+	var spans [][2]int
+	open := -1
+	for start := 0; start <= len(text); {
+		end := strings.IndexByte(text[start:], '\n')
+		if end < 0 {
+			end = len(text)
+		} else {
+			end += start
+		}
+		if selector.mentioned(text[start:end]) {
+			if open < 0 {
+				open = start
+			}
+		} else if open >= 0 {
+			spans = append(spans, [2]int{open, start - 1})
+			open = -1
+		}
+		start = end + 1
+	}
+	if open >= 0 {
+		spans = append(spans, [2]int{open, len(text)})
+	}
+	return spans
+}
+
+// mentioned reports whether text contains one of the selector's names; an
+// HTML field, multipart part or assignment always does.
+func (selector textSelector) mentioned(text string) bool {
+	if selector.literals == nil {
+		return true
+	}
+	fold := !selector.rule.CaseSensitive || len(selector.rule.Headers) > 0
+	for _, name := range selector.literals {
+		if fold && containsFoldASCII(text, name) || !fold && strings.Contains(text, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func isASCII(text string) bool {
+	for i := 0; i < len(text); i++ {
+		if text[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// containsFoldASCII reports whether text contains lowerNeedle, ignoring ASCII
+// case.
+func containsFoldASCII(text, lowerNeedle string) bool {
+	n := len(lowerNeedle)
+	if n == 0 {
+		return true
+	}
+	first, upper := lowerNeedle[0], lowerNeedle[0]
+	if 'a' <= first && first <= 'z' {
+		upper = first - ('a' - 'A')
+	}
+	for i := 0; i+n <= len(text); i++ {
+		if c := text[i]; c != first && c != upper {
+			continue
+		}
+		j := 1
+		for ; j < n; j++ {
+			c := text[i+j]
+			if 'A' <= c && c <= 'Z' {
+				c += 'a' - 'A'
+			}
+			if c != lowerNeedle[j] {
+				break
+			}
+		}
+		if j == n {
+			return true
+		}
+	}
+	return false
 }
 
 // match protects text[start:end] exactly as written, escapes included, so

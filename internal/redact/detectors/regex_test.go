@@ -155,3 +155,36 @@ func TestBuiltinTriggersNeverSkipRealMatches(t *testing.T) {
 		}
 	}
 }
+
+// Scanning only candidate lines finds exactly what scanning the whole text
+// finds, for every built-in pattern with a line filter.
+func FuzzLineFiltersMatchWholeText(f *testing.F) {
+	for _, seed := range []string{
+		"password = hunter2hunter2\nmail a.b@c.io",
+		"call 212-555-0123\nssn 123 45 6789 card 4111 1111 1111 1111",
+		"iban DE89370400440532013000\n\nip 10.0.0.1 id 550e8400-e29b-41d4-a716-446655440000",
+		"AWS_SECRET_ACCESS_KEY: wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEYab",
+	} {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, text string) {
+		for category, filter := range builtinLineFilters {
+			re := regexp.MustCompile(builtinPatterns[category])
+			whole := re.FindAllStringIndex(text, -1)
+			var lines [][]int
+			for _, span := range candidateSpans(text, filter) {
+				for _, loc := range re.FindAllStringIndex(text[span[0]:span[1]], -1) {
+					lines = append(lines, []int{loc[0] + span[0], loc[1] + span[0]})
+				}
+			}
+			if len(whole) != len(lines) {
+				t.Fatalf("%s: whole=%v lines=%v", category, whole, lines)
+			}
+			for i := range whole {
+				if whole[i][0] != lines[i][0] || whole[i][1] != lines[i][1] {
+					t.Fatalf("%s: whole=%v lines=%v", category, whole, lines)
+				}
+			}
+		}
+	})
+}

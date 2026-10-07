@@ -170,7 +170,9 @@ Built-in regex detection covers AWS and GCP keys, GitHub, GitLab, Slack,
 Stripe, and Anthropic tokens, private-key blocks, JWTs, explicit generic secret
 assignments, emails, SSNs, credit cards, phone numbers, and IBANs. A bare OpenAI
 `sk-...` value is deliberately not a dedicated built-in category. Define an
-explicit rule if your environment needs one.
+explicit rule if your environment needs one. Built-in detectors match within a single line:
+a phone number, SSN, card number or `secret = value` assignment split across
+lines is not detected.
 
 Rules live under `rules` in `~/.config/cover/config.yaml`. Each rule uses one
 selector: `pattern`, `detector`, `keys`, `headers`, `cookies`, `query_params`,

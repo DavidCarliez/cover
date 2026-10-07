@@ -11,8 +11,12 @@ import (
 // word on either side, so a short alias such as "host62" is not found inside
 // "host620" or "myhost62".
 type literalMatcher struct {
-	nodes    []literalNode
-	first    [256]bool
+	nodes []literalNode
+	first [256]bool
+	// pairs holds the first two bytes of every literal longer than one
+	// byte, so most candidate positions are rejected without a tree walk.
+	pairs    [256 * 256 / 64]uint64
+	single   bool
 	bounded  []bool
 	literals []string
 	maxLen   int
@@ -31,6 +35,12 @@ func newLiteralMatcher(literals []string, bounded func(int) bool) *literalMatche
 		}
 		m.bounded[i] = bounded != nil && bounded(i)
 		m.first[literal[0]] = true
+		if len(literal) == 1 {
+			m.single = true
+		} else {
+			pair := int(literal[0])<<8 | int(literal[1])
+			m.pairs[pair/64] |= 1 << (pair % 64)
+		}
 		if len(literal) > m.maxLen {
 			m.maxLen = len(literal)
 		}
@@ -80,6 +90,14 @@ func (m *literalMatcher) find(text string, from int) (start, end, index int, ok 
 	for i := from; i < len(text); i++ {
 		if !m.first[text[i]] {
 			continue
+		}
+		if !m.single {
+			if i+1 >= len(text) {
+				break
+			}
+			if pair := int(text[i])<<8 | int(text[i+1]); m.pairs[pair/64]&(1<<(pair%64)) == 0 {
+				continue
+			}
 		}
 		if end, index, ok := m.longestAt(text, i); ok {
 			return i, end, index, true

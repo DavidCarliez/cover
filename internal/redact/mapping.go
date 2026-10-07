@@ -275,10 +275,11 @@ func (o *occupiedSet) contains(candidate string) bool {
 			o.corpus = append(append(o.corpus, value...), 0)
 		}
 	}
-	// Index a large request once it needs repeated searches, so allocating
-	// many fakes costs one index build instead of one scan per candidate.
+	// A linear search of even a large request takes microseconds. Index it
+	// only when it needs enough searches that one index build costs less,
+	// so allocating thousands of fakes stays linear.
 	o.checks++
-	if o.index == nil && o.checks > 8 && len(o.corpus) > 64<<10 {
+	if o.index == nil && o.checks*len(o.corpus) > 256<<20 {
 		o.index = suffixarray.New(o.corpus)
 	}
 	if o.index != nil {

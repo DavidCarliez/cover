@@ -663,8 +663,16 @@ func TestOccupiedSetFindsSubstringsInLargeRequests(t *testing.T) {
 			t.Fatal("occupied lookup is wrong")
 		}
 	}
+	if occupied.index != nil {
+		t.Fatal("a few searches built an index")
+	}
+	for range 2000 {
+		if !occupied.contains("host-abc123") || occupied.contains("host-zzz999") {
+			t.Fatal("occupied lookup is wrong")
+		}
+	}
 	if occupied.index == nil {
-		t.Fatal("repeated searches of a large request did not build an index")
+		t.Fatal("many searches of a large request did not build an index")
 	}
 	var nilSet *occupiedSet
 	if nilSet.contains("x") {
