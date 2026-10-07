@@ -475,11 +475,14 @@ func (r *Redactor) transformUnselectedContent(
 			output, _, err := r.transformHTMLString(ctx, value, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth+1, true)
 			return output, err
 		},
+		// Text around and between messages, after a declared body, and in
+		// non-JSON bodies receives the complete unselected pipeline: it can
+		// hold JSON, a form or a URL that the framing did not claim.
 		Text: func(value string) (string, error) {
-			if output, handled, err := r.transformHTMLString(ctx, value, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth+1, false); handled || err != nil {
-				return output, err
+			if err := budget.visit(depth + 1); err != nil {
+				return "", err
 			}
-			return r.transformString(ctx, value, session, occupied, result, changed, capture)
+			return r.transformUnselectedContent(ctx, value, session, occupied, result, changed, capture, budget, depth+1, embeddedDepth+1)
 		},
 		HeaderSelected: func(name string) bool {
 			_, matched := r.fieldRule(selectorHeaders, name)
