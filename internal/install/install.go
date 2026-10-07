@@ -4,11 +4,13 @@ package install
 import (
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/DavidCarliez/cover/internal/atomicfile"
 	"github.com/DavidCarliez/cover/internal/config"
 )
 
@@ -53,11 +55,6 @@ func Run(opts Options) error {
 		}
 	}
 
-	upstream, err := resolveUpstream(agents, opts.Upstream, opts.Reader)
-	if err != nil {
-		return err
-	}
-
 	cfg := config.Default()
 	if config.Exists(cfgPath) {
 		existing, err := config.Load(cfgPath)
@@ -66,27 +63,44 @@ func Run(opts Options) error {
 		}
 		cfg = existing
 	}
-	cfg.Upstream = upstream
-
-	if err := config.Save(cfgPath, cfg); err != nil {
-		return err
+	// Re-running the installer, for example to upgrade, keeps a configured
+	// upstream such as a custom router unless one is passed explicitly.
+	if cfg.Upstream == "" || opts.Upstream != "" {
+		upstream, err := resolveUpstream(agents, opts.Upstream, opts.Reader)
+		if err != nil {
+			return err
+		}
+		cfg.Upstream = upstream
+		if config.Exists(cfgPath) {
+			err = config.SetUpstream(cfgPath, upstream)
+		} else {
+			err = config.Save(cfgPath, cfg)
+		}
+		if err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintf(out, "Keeping the configured upstream %s.\n", redactedUpstream(cfg.Upstream))
 	}
 
 	if err := saveAgents(agents); err != nil {
 		return err
 	}
 
+	profile := ""
 	if !opts.NoProfile {
-		if err := writeShellProfile(cfg.Listen, agents); err != nil {
+		var err error
+		if profile, err = writeShellProfile(cfg.Listen, agents); err != nil {
 			fmt.Fprintf(out, "Warning: could not update shell profile: %v\n", err)
+			profile = ""
 		}
 	}
 
-	if err := configureAgentSettings(cfg.Listen, agents); err != nil {
+	if err := configureAgentSettings(out, cfg.Listen, agents); err != nil {
 		fmt.Fprintf(out, "Warning: could not update agent settings: %v\n", err)
 	}
 
-	printAgentNotes(out, agents, cfg.Listen)
+	printAgentNotes(out, agents, cfg.Listen, profile)
 
 	if !opts.SkipStart {
 		if err := runStartDetached(); err != nil {
@@ -99,15 +113,38 @@ func Run(opts Options) error {
 // EnvExports returns shell export statements for the configured agents and
 // listen address. Used to apply settings in the current shell session.
 func EnvExports(listen string, agents []Agent) []string {
-	baseHTTP := "http://" + listen
 	var lines []string
-	if containsAgent(agents, AgentOpenAI) || containsAgent(agents, AgentCursor) {
-		lines = append(lines, fmt.Sprintf("export OPENAI_BASE_URL=%q", baseHTTP+"/v1"))
-	}
-	if containsAgent(agents, AgentClaude) {
-		lines = append(lines, fmt.Sprintf("export ANTHROPIC_BASE_URL=%q", baseHTTP))
+	for _, variable := range envVariables(listen, agents) {
+		lines = append(lines, "export "+variable[0]+"="+shellQuote(variable[1]))
 	}
 	return lines
+}
+
+// envVariables lists the base URL variables for the configured agents.
+func envVariables(listen string, agents []Agent) [][2]string {
+	baseHTTP := "http://" + listen
+	var variables [][2]string
+	if containsAgent(agents, AgentOpenAI) || containsAgent(agents, AgentCursor) {
+		variables = append(variables, [2]string{"OPENAI_BASE_URL", baseHTTP + "/v1"})
+	}
+	if containsAgent(agents, AgentClaude) {
+		variables = append(variables, [2]string{"ANTHROPIC_BASE_URL", baseHTTP})
+	}
+	return variables
+}
+
+// shellQuote single-quotes value for POSIX shells and fish, so no part of it
+// is expanded or executed when a new shell reads the profile.
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func redactedUpstream(upstream string) string {
+	u, err := url.Parse(upstream)
+	if err != nil || u.Host == "" {
+		return "(custom)"
+	}
+	return u.Scheme + "://" + u.Host
 }
 
 // LoadSavedAgents reads the agent list written by a previous install run.
@@ -147,7 +184,7 @@ func saveAgents(agents []Agent) error {
 		b.WriteString(string(a))
 		b.WriteByte('\n')
 	}
-	return os.WriteFile(path, []byte(b.String()), 0o600)
+	return atomicfile.Write(path, []byte(b.String()), 0o600)
 }
 
 func agentsFilePath() (string, error) {
@@ -249,7 +286,7 @@ func runStartDetached() error {
 	return cmd.Run()
 }
 
-func printAgentNotes(w io.Writer, agents []Agent, listen string) {
+func printAgentNotes(w io.Writer, agents []Agent, listen, profile string) {
 	baseHTTP := "http://" + listen
 	openAIURL := baseHTTP + "/v1"
 	anthropicURL := baseHTTP
@@ -294,8 +331,10 @@ func printAgentNotes(w io.Writer, agents []Agent, listen string) {
 		fmt.Fprintln(w, c(dim, "    (Cursor may require a public tunnel for localhost — see README)"))
 		fmt.Fprintln(w)
 	}
-	fmt.Fprintln(w, c(dim, "  Shell profile updated — new terminals pick up exports automatically."))
-	fmt.Fprintln(w)
+	if profile != "" {
+		fmt.Fprintln(w, c(dim, "  Updated "+profile+" — new terminals pick up exports automatically."))
+		fmt.Fprintln(w)
+	}
 }
 
 const (
@@ -303,29 +342,31 @@ const (
 	profileEnd   = "# <<< Cover end <<<"
 )
 
-func writeShellProfile(listen string, agents []Agent) error {
-	profile, err := shellProfilePath()
+// writeShellProfile writes the exports to the user's shell profile and
+// returns its path. fish reads a Cover-owned file in conf.d instead.
+func writeShellProfile(listen string, agents []Agent) (string, error) {
+	profile, fish, err := shellProfilePath()
 	if err != nil {
-		return err
+		return "", err
+	}
+	if fish {
+		var b strings.Builder
+		b.WriteString("# Written by cover install.\n")
+		for _, variable := range envVariables(listen, agents) {
+			b.WriteString("set -gx " + variable[0] + " " + shellQuote(variable[1]) + "\n")
+		}
+		return profile, atomicfile.Write(profile, []byte(b.String()), 0o644)
 	}
 
-	baseHTTP := "http://" + listen
-	openAIURL := baseHTTP + "/v1"
-	anthropicURL := baseHTTP
-
-	var lines []string
-	lines = append(lines, profileBegin)
-	if containsAgent(agents, AgentOpenAI) || containsAgent(agents, AgentCursor) {
-		lines = append(lines, fmt.Sprintf("export OPENAI_BASE_URL=%q", openAIURL))
-	}
-	if containsAgent(agents, AgentClaude) {
-		lines = append(lines, fmt.Sprintf("export ANTHROPIC_BASE_URL=%q", anthropicURL))
-	}
+	lines := []string{profileBegin}
+	lines = append(lines, EnvExports(listen, agents)...)
 	lines = append(lines, profileEnd)
-
 	block := strings.Join(lines, "\n") + "\n"
 
-	existing, _ := os.ReadFile(profile)
+	existing, err := os.ReadFile(profile)
+	if err != nil && !os.IsNotExist(err) {
+		return "", err
+	}
 	content := string(existing)
 	if idx := strings.Index(content, profileBegin); idx >= 0 {
 		if end := strings.Index(content[idx:], profileEnd); end >= 0 {
@@ -343,29 +384,34 @@ func writeShellProfile(listen string, agents []Agent) error {
 		}
 		content += "\n" + block
 	}
-
-	if err := os.MkdirAll(filepath.Dir(profile), 0o755); err != nil {
-		return err
+	if content == string(existing) {
+		return profile, nil
 	}
-	return os.WriteFile(profile, []byte(content), 0o644)
+	return profile, atomicfile.Write(profile, []byte(content), 0o644)
 }
 
-func shellProfilePath() (string, error) {
+func shellProfilePath() (path string, fish bool, err error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
 	shell := os.Getenv("SHELL")
-	if strings.HasSuffix(shell, "zsh") {
-		return filepath.Join(home, ".zshrc"), nil
-	}
-	if strings.HasSuffix(shell, "bash") {
-		if _, err := os.Stat(filepath.Join(home, ".bashrc")); err == nil {
-			return filepath.Join(home, ".bashrc"), nil
+	switch {
+	case strings.HasSuffix(shell, "fish"):
+		configHome := os.Getenv("XDG_CONFIG_HOME")
+		if configHome == "" {
+			configHome = filepath.Join(home, ".config")
 		}
-		return filepath.Join(home, ".bash_profile"), nil
+		return filepath.Join(configHome, "fish", "conf.d", "cover.fish"), true, nil
+	case strings.HasSuffix(shell, "zsh"):
+		return filepath.Join(home, ".zshrc"), false, nil
+	case strings.HasSuffix(shell, "bash"):
+		if _, err := os.Stat(filepath.Join(home, ".bashrc")); err == nil {
+			return filepath.Join(home, ".bashrc"), false, nil
+		}
+		return filepath.Join(home, ".bash_profile"), false, nil
 	}
-	return filepath.Join(home, ".profile"), nil
+	return filepath.Join(home, ".profile"), false, nil
 }
 
 func isTerminal(w io.Writer) bool {

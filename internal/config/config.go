@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/DavidCarliez/cover/internal/atomicfile"
 	"github.com/DavidCarliez/cover/internal/redact"
 	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
@@ -419,7 +420,44 @@ func Save(path string, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("encoding config: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := atomicfile.Write(path, data, 0o600); err != nil {
+		return fmt.Errorf("writing config %s: %w", path, err)
+	}
+	return nil
+}
+
+// SetUpstream changes only the upstream of the configuration file at path,
+// keeping its comments and layout.
+func SetUpstream(path, upstream string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading config %s: %w", path, err)
+	}
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
+		return fmt.Errorf("parsing config %s: %w", path, err)
+	}
+	if len(document.Content) == 0 || document.Content[0].Kind != yaml.MappingNode {
+		return fmt.Errorf("config %s is not a mapping", path)
+	}
+	root := document.Content[0]
+	value := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: upstream}
+	found := false
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "upstream" {
+			root.Content[i+1], found = value, true
+		}
+	}
+	if !found {
+		root.Content = append([]*yaml.Node{{Kind: yaml.ScalarNode, Tag: "!!str", Value: "upstream"}, value}, root.Content...)
+	}
+	var out bytes.Buffer
+	encoder := yaml.NewEncoder(&out)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&document); err != nil {
+		return fmt.Errorf("encoding config: %w", err)
+	}
+	if err := atomicfile.Write(path, out.Bytes(), 0o600); err != nil {
 		return fmt.Errorf("writing config %s: %w", path, err)
 	}
 	return nil
