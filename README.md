@@ -199,10 +199,34 @@ rules:
 ```
 
 Key selectors protect complete values, including short strings. For example,
-`{"password":"admin"}` is protected without treating an unrelated
-`{"username":"admin"}` as a password. A selected array or object applies the
+`{"password":"admin"}` is protected without treating every
+`{"username":...}` as a password. A selected array or object applies the
 policy to its scalar descendants; a higher-priority child rule can override it.
 Named `(?P<value>...)` groups let a regex replace only the captured value.
+
+### Protected values stay protected
+
+Once any rule protects a value, Cover protects that same value wherever it
+appears again, with the same action and the same deterministic replacement:
+
+- in prose, commands or other fields of the same request, wherever they appear;
+- on later turns, after a response restored it and the agent sent it back in
+  its history, including from a new session or a compacted summary;
+- in JSON-escaped, HTML-escaped and URL-encoded forms of the value;
+- as an unselected JSON number of six or more digits equal to a protected
+  numeric value.
+
+Values shorter than 4 bytes are not matched outside their selected field.
+Values shorter than 8 bytes, and numbers, only match as whole words, so a
+protected `admin` does not change `administrator`. In the example above, a
+`{"username":"admin"}` next to `{"password":"admin"}` is therefore protected
+too, because sending it would disclose the password. Fields covered by an
+explicit `allow` key rule stay unchanged.
+
+This memory is held only in process memory, bounded by
+`mappings.max_known_values` (default 50,000) and
+`mappings.known_value_ttl_minutes` (default 24 hours). After a restart, a
+value is protected again once a rule matches it.
 
 | Action | What the LLM receives | Response behavior |
 | --- | --- | --- |

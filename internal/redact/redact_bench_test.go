@@ -148,3 +148,32 @@ func BenchmarkRedact_Chat20Msg_Cached(b *testing.B) {
 		r.Redact(body)
 	}
 }
+
+func BenchmarkTransform_KnownValueScale(b *testing.B) {
+	history := strings.Repeat("The deployment finished and the service answered every health check. ", 2000)
+	body, err := json.Marshal(map[string]any{"messages": []any{
+		map[string]any{"role": "user", "content": history},
+		map[string]any{"role": "assistant", "content": "use known-secret-42 next"},
+	}})
+	if err != nil {
+		b.Fatal(err)
+	}
+	for _, entries := range []int{0, 100, 10000} {
+		b.Run(fmt.Sprintf("entries_%d", entries), func(b *testing.B) {
+			r := New(NewStore(), 0, RedactorOptions{FieldRules: []FieldRule{{
+				Name: "secret", Keys: []string{"secret"}, Action: string(ActionRedact), Priority: 1,
+			}}})
+			for i := 0; i < entries; i++ {
+				r.store.known.remember(fmt.Sprintf("known-secret-%d", i), detectors.Match{Rule: "secret", Action: string(ActionRedact)})
+			}
+			b.SetBytes(int64(len(body)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				if _, err := r.Transform(body, "bench", false, "allow"); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
+	}
+}

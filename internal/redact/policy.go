@@ -44,6 +44,11 @@ type TransformResult struct {
 	Blocked     bool            `json:"blocked"`
 	Warnings    []string        `json:"warnings,omitempty"`
 	Captures    []CaptureReport `json:"-"`
+
+	// newKnownValues counts originals this transform protected for the
+	// first time. Earlier strings may contain them, so the request is
+	// transformed once more.
+	newKnownValues int
 }
 
 // FieldRule applies a policy to one selector kind. Keys select JSON object
@@ -94,15 +99,9 @@ func (r *Redactor) transform(body []byte, session string, injectNote bool, media
 		result.Body = body
 		return result, nil
 	}
-	dec := json.NewDecoder(bytes.NewReader(body))
-	dec.UseNumber()
-	var data any
-	if err := dec.Decode(&data); err != nil {
-		return result, ErrMalformedJSON
-	}
-	var trailing any
-	if err := dec.Decode(&trailing); err != io.EOF {
-		return result, ErrMalformedJSON
+	data, err := decodeRequestJSON(body)
+	if err != nil {
+		return result, err
 	}
 
 	policy := strings.ToLower(mediaPolicy)
@@ -135,11 +134,24 @@ func (r *Redactor) transform(body []byte, session string, injectNote bool, media
 		ctx, cancel = context.WithTimeout(ctx, r.llmBudget)
 		defer cancel()
 	}
+	initial := result
 	changed := false
-	budget := &transformBudget{}
-	walked, err := r.walkPolicy(ctx, data, session, occupied, &result, &changed, capture, budget, 0, 0, nil, protocolBusiness, "")
+	walked, err := r.walkPolicy(ctx, data, session, occupied, &result, &changed, capture, &transformBudget{}, 0, 0, nil, protocolBusiness, "")
 	if err != nil {
 		return TransformResult{}, genericUnsafeError(err)
+	}
+	if result.newKnownValues > 0 && !result.Blocked {
+		// A value first protected late in the walk may also occur in a string
+		// visited earlier. Mappings are deterministic, so a second walk over
+		// the original request protects every occurrence with the same fakes.
+		if data, err = decodeRequestJSON(body); err != nil {
+			return TransformResult{}, err
+		}
+		result, changed = initial, false
+		walked, err = r.walkPolicy(ctx, data, session, occupied, &result, &changed, capture, &transformBudget{}, 0, 0, nil, protocolBusiness, "")
+		if err != nil {
+			return TransformResult{}, genericUnsafeError(err)
+		}
 	}
 	if injectNote && result.Transformed > 0 {
 		if root, ok := walked.(map[string]any); ok {
@@ -156,6 +168,20 @@ func (r *Redactor) transform(body []byte, session string, injectNote bool, media
 	}
 	result.Body = out
 	return result, nil
+}
+
+func decodeRequestJSON(body []byte) (any, error) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var data any
+	if err := dec.Decode(&data); err != nil {
+		return nil, ErrMalformedJSON
+	}
+	var trailing any
+	if err := dec.Decode(&trailing); err != io.EOF {
+		return nil, ErrMalformedJSON
+	}
+	return data, nil
 }
 
 func genericUnsafeError(err error) error {
@@ -288,7 +314,11 @@ func (r *Redactor) walkPolicy(
 		return r.transformUnselectedContent(ctx, val, session, occupied, result, changed, capture, budget, depth, embeddedDepth)
 	case json.Number:
 		if inherited == nil {
-			return val, nil
+			rule, known := r.knownNumberRule(val.String())
+			if !known {
+				return val, nil
+			}
+			return r.transformFieldNumber(val, session, occupied, result, changed, rule, capture)
 		}
 		return r.transformFieldNumber(val, session, occupied, result, changed, *inherited, capture)
 	case bool:
@@ -419,7 +449,7 @@ func (r *Redactor) transformUnselectedContent(
 			return output, err
 		}
 	}
-	hasTextPolicy := len(r.detectors) > 0
+	hasTextPolicy := len(r.detectors) > 0 || r.store.known.current() != nil
 	httpOutput, handled, err := protectHTTPContent(text, httpContentPolicy{
 		Transform: func(selector, name, value string) (string, error) {
 			if rule, matched := r.fieldRule(selector, name); matched {
@@ -661,7 +691,7 @@ func selectNonOverlapping(matches []detectors.Match) []detectors.Match {
 }
 
 func (r *Redactor) policyTextMatches(ctx context.Context, text string) ([]detectors.Match, error) {
-	var all []detectors.Match
+	all := r.store.known.current().matches(text)
 	for _, det := range r.detectors {
 		matches, err := safeDetect(ctx, det, text)
 		if err != nil {
@@ -750,6 +780,11 @@ func (r *Redactor) transformFieldNumber(number json.Number, session string, occu
 	}
 	result.Categories = append(result.Categories, category)
 	result.Matches = append(result.Matches, MatchReport{Rule: rule.Name, Category: category, Action: action, Generator: rule.Generator})
+	if Action(action) != ActionAllow && r.store.known.remember(original, detectors.Match{
+		Category: category, Rule: rule.Name, Action: action, Generator: rule.Generator, Priority: rule.Priority,
+	}) {
+		result.newKnownValues++
+	}
 
 	replacement := original
 	switch Action(action) {
@@ -847,14 +882,18 @@ func (r *Redactor) applyPolicyMatches(text, session string, occupied map[string]
 		if action == "" {
 			action = string(ActionPlaceholder)
 		}
+		original, ok := decodeKnownValue(m.Encoding, m.Value)
+		if !ok {
+			return fmt.Errorf("%w: invalid encoded match", ErrUnsafeRequest)
+		}
 		result.Categories = append(result.Categories, m.Category)
 		result.Matches = append(result.Matches, MatchReport{Rule: m.Rule, Category: m.Category, Action: action, Generator: m.Generator})
-		replacement := m.Value
+		replacement := original
 		switch Action(action) {
 		case ActionAllow:
 		case ActionPlaceholder:
 			var err error
-			replacement, err = r.store.PlaceholderForSession(session, m.Value, occupied)
+			replacement, err = r.store.PlaceholderForSession(session, original, occupied)
 			if err != nil {
 				return fmt.Errorf("%w: mapping failed", ErrUnsafeRequest)
 			}
@@ -864,15 +903,15 @@ func (r *Redactor) applyPolicyMatches(text, session string, occupied map[string]
 				return fmt.Errorf("%w: invalid rule policy", ErrUnsafeRequest)
 			}
 			var err error
-			replacement, err = r.store.Map(session, m.Value, occupied, func(attempt int) (string, error) {
-				return generateReplacement(r.store.key[:], m.Generator, m.Value, attempt)
+			replacement, err = r.store.Map(session, original, occupied, func(attempt int) (string, error) {
+				return generateReplacement(r.store.key[:], m.Generator, original, attempt)
 			})
 			if err != nil {
 				return fmt.Errorf("%w: generator or mapping failed", ErrUnsafeRequest)
 			}
 			result.Transformed++
 		case ActionMask:
-			replacement = maskValue(m.Value)
+			replacement = maskValue(original)
 			result.Transformed++
 		case ActionRedact:
 			replacement = "[REDACTED]"
@@ -884,11 +923,19 @@ func (r *Redactor) applyPolicyMatches(text, session string, occupied map[string]
 		default:
 			return fmt.Errorf("%w: unknown action", ErrUnsafeRequest)
 		}
+		if Action(action) != ActionAllow && r.store.known.remember(original, m) {
+			result.newKnownValues++
+		}
 		if capture {
 			result.Captures = append(result.Captures, CaptureReport{
 				Rule: m.Rule, Category: m.Category, Action: action,
-				Original: m.Value, Replacement: replacement,
+				Original: original, Replacement: replacement,
 			})
+		}
+		if replacement != original {
+			replacement = encodeKnownValue(m.Encoding, replacement)
+		} else {
+			replacement = m.Value
 		}
 		emit(m, replacement)
 		if replacement != m.Value {
@@ -896,6 +943,26 @@ func (r *Redactor) applyPolicyMatches(text, session string, occupied map[string]
 		}
 	}
 	return nil
+}
+
+// knownNumberRule returns the policy for an unselected JSON number that equals
+// a protected original. Numbers keep their JSON type through the number
+// generator unless the original was blocked.
+func (r *Redactor) knownNumberRule(number string) (FieldRule, bool) {
+	snapshot := r.store.known.current()
+	if snapshot == nil {
+		return FieldRule{}, false
+	}
+	template, ok := snapshot.numbers[number]
+	if !ok {
+		return FieldRule{}, false
+	}
+	rule := FieldRule{Name: template.Rule, Category: template.Category, Priority: template.Priority,
+		Action: string(ActionPseudonymize), Generator: "number"}
+	if Action(template.Action) == ActionBlock {
+		rule.Action, rule.Generator = string(ActionBlock), ""
+	}
+	return rule, true
 }
 
 func detectImageMedia(v any) bool {

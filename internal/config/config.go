@@ -54,6 +54,11 @@ type MappingsConfig struct {
 	MaxSessions          int    `yaml:"max_sessions"`
 	MaxEntriesPerSession int    `yaml:"max_entries_per_session"`
 	SessionTTLMinutes    int    `yaml:"session_ttl_minutes"`
+	// MaxKnownValues and KnownValueTTLMinutes bound the in-memory set of
+	// protected originals that stay protected wherever they reappear,
+	// across sessions and requests.
+	MaxKnownValues       int `yaml:"max_known_values"`
+	KnownValueTTLMinutes int `yaml:"known_value_ttl_minutes"`
 }
 
 type MediaConfig struct {
@@ -175,6 +180,8 @@ func Default() *Config {
 			MaxSessions:          128,
 			MaxEntriesPerSession: 10000,
 			SessionTTLMinutes:    60,
+			MaxKnownValues:       50000,
+			KnownValueTTLMinutes: 1440,
 		},
 		Media: MediaConfig{Images: "allow"},
 		Detectors: DetectorsConfig{
@@ -275,7 +282,8 @@ func (c *Config) Validate() error {
 	if strings.TrimSpace(c.Pseudonymization.KeyFile) == "" {
 		return fmt.Errorf("pseudonymization.key_file must not be empty")
 	}
-	if c.Mappings.MaxSessions <= 0 || c.Mappings.MaxEntriesPerSession <= 0 || c.Mappings.SessionTTLMinutes <= 0 {
+	if c.Mappings.MaxSessions <= 0 || c.Mappings.MaxEntriesPerSession <= 0 || c.Mappings.SessionTTLMinutes <= 0 ||
+		c.Mappings.MaxKnownValues <= 0 || c.Mappings.KnownValueTTLMinutes <= 0 {
 		return fmt.Errorf("mapping limits and TTL must be positive")
 	}
 	switch c.Media.Images {

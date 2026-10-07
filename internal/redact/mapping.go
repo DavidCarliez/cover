@@ -25,6 +25,10 @@ type StoreOptions struct {
 	SessionTTL           time.Duration
 	Now                  func() time.Time
 	PseudonymKey         [32]byte
+	// MaxKnownValues and KnownValueTTL bound the process-wide memory of
+	// protected originals that are protected again wherever they reappear.
+	MaxKnownValues int
+	KnownValueTTL  time.Duration
 }
 
 type sessionMappings struct {
@@ -91,6 +95,7 @@ type Store struct {
 	sessions map[string]*sessionMappings
 	opts     StoreOptions
 	key      [32]byte
+	known    *knownValues
 }
 
 func NewStore() *Store { return NewStoreWithOptions(StoreOptions{}) }
@@ -113,7 +118,10 @@ func NewStoreWithOptions(opts StoreOptions) *Store {
 			panic(fmt.Sprintf("generating ephemeral pseudonym key: %v", err))
 		}
 	}
-	return &Store{sessions: make(map[string]*sessionMappings), opts: opts, key: opts.PseudonymKey}
+	return &Store{
+		sessions: make(map[string]*sessionMappings), opts: opts, key: opts.PseudonymKey,
+		known: newKnownValues(opts.MaxKnownValues, opts.KnownValueTTL, opts.Now),
+	}
 }
 
 func normalizeSession(session string) string {
@@ -174,9 +182,8 @@ func (s *Store) mapValue(session, identity, original string, numeric bool, occup
 		return "", err
 	}
 	if fake, ok := m.forward[identity]; ok {
-		if collidesWithOccupied(fake, occupied) {
-			return "", fmt.Errorf("existing replacement collides with request context")
-		}
+		// The request may already contain this fake, for example in history
+		// that a client kept unrestored. It still denotes the same original.
 		return fake, nil
 	}
 	if len(m.forward) >= s.opts.MaxEntriesPerSession {

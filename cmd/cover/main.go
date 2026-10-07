@@ -745,6 +745,8 @@ func buildRedactor(cfg *config.Config) (*redact.Redactor, func(), error) {
 		MaxSessions:          cfg.Mappings.MaxSessions,
 		MaxEntriesPerSession: cfg.Mappings.MaxEntriesPerSession,
 		SessionTTL:           time.Duration(cfg.Mappings.SessionTTLMinutes) * time.Minute,
+		MaxKnownValues:       cfg.Mappings.MaxKnownValues,
+		KnownValueTTL:        time.Duration(cfg.Mappings.KnownValueTTLMinutes) * time.Minute,
 		PseudonymKey:         pseudonymKey,
 	})
 	cleanup := func() {}

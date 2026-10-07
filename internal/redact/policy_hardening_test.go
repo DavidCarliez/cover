@@ -160,14 +160,16 @@ func TestFieldRulePseudonymizesPasswordValuesByJSONKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Transformed != 3 {
-		t.Fatalf("Transformed=%d, want 3: %s", result.Transformed, result.Body)
+	// The two unselected copies of the password are protected too: sending
+	// them would disclose the selected value.
+	if result.Transformed != 5 {
+		t.Fatalf("Transformed=%d, want 5: %s", result.Transformed, result.Body)
 	}
 	var got map[string]any
 	if err := json.Unmarshal(result.Body, &got); err != nil {
 		t.Fatal(err)
 	}
-	if got["password"] == "admin" || got["username"] != "admin" || got["password_hint"] != "admin" {
+	if got["password"] == "admin" || got["username"] != got["password"] || got["password_hint"] != got["password"] {
 		t.Fatalf("unexpected top-level transformation: %#v", got)
 	}
 	nested := got["nested"].(map[string]any)

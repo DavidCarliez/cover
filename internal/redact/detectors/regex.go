@@ -23,6 +23,10 @@ type Match struct {
 	Action    string
 	Generator string
 	Priority  int
+	// Encoding names the escaping through which Value represents the
+	// protected original, such as "json" or "query". Empty means Value is the
+	// original itself.
+	Encoding string
 }
 
 // Detector finds sensitive substrings within a block of text.

@@ -62,6 +62,10 @@ mappings:
   max_sessions: 128
   max_entries_per_session: 10000
   session_ttl_minutes: 60
+  # Protected originals stay protected wherever they reappear, for example
+  # in prose after a response restored them. Kept in memory only.
+  max_known_values: 50000
+  known_value_ttl_minutes: 1440
 
 # Image pixels are not inspected for sensitive content. Encoded image data,
 # image URLs, and image file IDs pass through unchanged under allow or warn.
