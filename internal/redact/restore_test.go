@@ -231,3 +231,63 @@ func bytesTrimToDataJSON(event []byte) []byte {
 	}
 	return nil
 }
+
+func TestRestoreOnlyReplacesWholeWordFakes(t *testing.T) {
+	store := NewStore()
+	fake, err := store.Map("s", "prod-db-7", nil, func(int) (string, error) { return "host62", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := New(store, 0, RedactorOptions{})
+	body := fmt.Sprintf(`{"text":"%s, %s.example, host620, myhost62, %s_x, (%s)"}`, fake, fake, fake, fake)
+	got := string(r.RestoreResponseForSession([]byte(body), "application/json", "s"))
+	want := `{"text":"prod-db-7, prod-db-7.example, host620, myhost62, host62_x, (prod-db-7)"}`
+	if got != want {
+		t.Fatalf("restored %s\nwant %s", got, want)
+	}
+}
+
+func TestRestoreNumericFakeInProse(t *testing.T) {
+	store := NewStore()
+	fake, err := store.MapNumber("s", "12.50", nil, func(int) (string, error) { return "1234567890123", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := New(store, 0, RedactorOptions{})
+	body := fmt.Sprintf(`{"text":"Account %s is active; 91234567890123 is not","n":%s}`, fake, fake)
+	got := string(r.RestoreResponseForSession([]byte(body), "application/json", "s"))
+	want := `{"n":12.50,"text":"Account 12.50 is active; 91234567890123 is not"}`
+	if got != want {
+		t.Fatalf("restored %s\nwant %s", got, want)
+	}
+}
+
+func TestSafeStreamCutHoldsFakeUntilBoundaryIsKnown(t *testing.T) {
+	store := NewStore()
+	for original, fake := range map[string]string{"alpha-original": "host62", "beta-original": "st62-tail"} {
+		if _, err := store.Map("s", original, nil, func(int) (string, error) { return fake, nil }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r := New(store, 0, RedactorOptions{})
+	for _, data := range []string{
+		"some prose before host62",
+		"some prose before host62 and more prose after it",
+		"overlapping prose host62-tail with trailing text",
+	} {
+		cut := r.SafeStreamCut([]byte(data), "s")
+		for _, fake := range []string{"host62", "st62-tail"} {
+			for start := strings.Index(data, fake); start >= 0; {
+				end := start + len(fake)
+				if start < cut && end >= cut {
+					t.Fatalf("cut %d in %q splits or ends at fake %q [%d,%d)", cut, data, fake, start, end)
+				}
+				next := strings.Index(data[start+1:], fake)
+				if next < 0 {
+					break
+				}
+				start += next + 1
+			}
+		}
+	}
+}

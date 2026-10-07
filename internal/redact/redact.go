@@ -220,26 +220,7 @@ func (r *Redactor) SafeStreamCut(data []byte, session string) int {
 	if snapshot == nil {
 		return len(data)
 	}
-	reserve := snapshot.maxFakeLen - 1
-	if len(data) <= reserve {
-		return 0
-	}
-	cut := len(data) - reserve
-	for _, fake := range snapshot.fakes {
-		start := 0
-		for {
-			i := bytes.Index(data[start:], fake)
-			if i < 0 {
-				break
-			}
-			i += start
-			if i < cut && i+len(fake) > cut {
-				cut = i
-			}
-			start = i + 1
-		}
-	}
-	return cut
+	return snapshot.safeCut(data)
 }
 
 var llmSkipKeys = map[string]bool{

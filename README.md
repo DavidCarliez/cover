@@ -294,7 +294,7 @@ Use `number` for opaque numeric identifiers, not values the model must use in
 calculations. It emits a deterministic signed integer below JavaScript's exact
 integer limit. JSON numbers stay numbers; restoration retains the original
 integer, fraction or exponent representation. Numeric aliases also restore in
-recognized HTTP/curl values and URL path segments, but not arbitrary prose.
+recognized HTTP/curl values, URL path segments and prose.
 Selected numbers require `allow`, `block`, or `pseudonymize` with `number`.
 Selected booleans require `allow` or `block`; null stays null.
 
@@ -353,6 +353,11 @@ names, addresses and confidential prose still require rules or a local
 data-release policy; successful HTML parsing is not a privacy classification.
 
 ### Stable pseudonyms and reversible mappings
+
+Responses restore a replacement only where it stands as a whole token: an
+alias such as `host62` is restored in `host62.` or `(host62)`, but not inside
+`host620` or `myhost62`. Streams hold back a possible replacement until the
+following character is known.
 
 Cover creates `~/.config/cover/pseudonym.key` with owner-only permissions.
 HMAC-SHA-256 derives the same pseudonym for the same original value across

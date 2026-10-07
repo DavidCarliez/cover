@@ -39,24 +39,45 @@ type sessionMappings struct {
 // without holding Store.mu. A session invalidates its snapshot whenever a new
 // mapping is added.
 type restorationSnapshot struct {
-	replacer   *strings.Replacer
+	matcher    *literalMatcher
+	originals  []string
 	numbers    map[string]string
-	fakes      [][]byte
 	maxFakeLen int
 }
 
 func (s *restorationSnapshot) restoreBytes(data []byte) ([]byte, bool) {
-	input := string(data)
-	restored := s.replacer.Replace(input)
-	if restored == input {
+	restored, changed := s.restoreString(string(data))
+	if !changed {
 		return data, false
 	}
 	return []byte(restored), true
 }
 
+// restoreString replaces every whole-word fake. A fake glued to surrounding
+// word characters is a different token and stays unchanged.
 func (s *restorationSnapshot) restoreString(value string) (string, bool) {
-	restored := s.replacer.Replace(value)
-	return restored, restored != value
+	return s.matcher.replace(value, func(index int) string { return s.originals[index] })
+}
+
+// safeCut returns how many leading bytes of data can be restored now. A fake
+// that reaches the end of data, or the cut itself, is held back so the next
+// byte can decide its word boundary.
+func (s *restorationSnapshot) safeCut(data []byte) int {
+	reserve := s.maxFakeLen
+	if len(data) <= reserve {
+		return 0
+	}
+	cut := len(data) - reserve
+	for moved := true; moved; {
+		moved = false
+		for start := max(0, cut-s.maxFakeLen+1); start < cut; start++ {
+			if s.matcher.first[data[start]] && s.matcher.spansCut(data, start, cut) {
+				cut, moved = start, true
+				break
+			}
+		}
+	}
+	return cut
 }
 
 func (s *restorationSnapshot) restoreNumber(value string) (string, bool) {
@@ -277,25 +298,21 @@ func (s *Store) restorationSnapshot(session string) *restorationSnapshot {
 	}
 
 	keys := sortedFakeKeys(m.reverse)
-	pairs := make([]string, 0, len(keys)*2)
+	originals := make([]string, len(keys))
 	numbers := make(map[string]string, len(m.numeric))
-	fakes := make([][]byte, 0, len(keys))
 	maxFakeLen := 0
-	for _, fake := range keys {
-		original := m.reverse[fake]
+	for i, fake := range keys {
+		originals[i] = m.reverse[fake]
 		if m.numeric[fake] {
-			numbers[fake] = original
-		} else {
-			pairs = append(pairs, fake, original)
+			numbers[fake] = originals[i]
 		}
-		fakes = append(fakes, []byte(fake))
 		if len(fake) > maxFakeLen {
 			maxFakeLen = len(fake)
 		}
 	}
 	m.restore = &restorationSnapshot{
-		replacer: strings.NewReplacer(pairs...),
-		numbers:  numbers, fakes: fakes, maxFakeLen: maxFakeLen,
+		matcher:   newLiteralMatcher(keys, func(int) bool { return true }),
+		originals: originals, numbers: numbers, maxFakeLen: maxFakeLen,
 	}
 	return m.restore
 }
