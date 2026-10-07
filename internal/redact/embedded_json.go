@@ -295,10 +295,7 @@ func looksLikeEmbeddedJSON(text string) bool {
 	if text[left] == '"' || structuredJSONStart(text[left:right]) {
 		return true
 	}
-	command := text[left:right]
-	if strings.HasPrefix(command, "$ ") {
-		command = command[2:]
-	}
+	command := strings.TrimPrefix(text[left:right], "$ ")
 	if strings.HasPrefix(command, "curl ") &&
 		(strings.Contains(command, " --data ") || strings.Contains(command, " --data=") ||
 			strings.Contains(command, " --data-raw ") || strings.Contains(command, " --data-raw=") ||

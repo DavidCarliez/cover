@@ -355,7 +355,7 @@ func chatToolDeltaEvent(arguments string, choiceIndex, toolIndex int) string {
 	return fmt.Sprintf("data: %s\n\n", payload)
 }
 
-func aliasPseudonym(t *testing.T, session string) (*redact.Redactor, string) {
+func aliasPseudonym(t testing.TB, session string) (*redact.Redactor, string) {
 	t.Helper()
 	r := policyProxyRedactor(t, detectors.CustomPattern{
 		Name: "customer", Pattern: `CUSTOMER-ALPHA`, Action: "pseudonymize", Generator: "alias",

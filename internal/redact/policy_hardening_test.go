@@ -269,7 +269,7 @@ func TestCollisionAndDuplicateHandling(t *testing.T) {
 	}
 }
 
-type failingDetector struct{ panic bool }
+type failingDetector struct{}
 
 func (d failingDetector) Name() string                    { return "failing" }
 func (d failingDetector) Detect(string) []detectors.Match { return nil }

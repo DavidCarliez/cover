@@ -13,7 +13,7 @@ import (
 func TestContentTokenIsStableAndInstallationScoped(t *testing.T) {
 	var keyA, keyB [32]byte
 	keyA[0], keyB[0] = 1, 2
-	if ContentToken(keyA) != ContentToken(keyA) {
+	if first, second := ContentToken(keyA), ContentToken(keyA); first != second {
 		t.Fatal("content token is not stable")
 	}
 	if ContentToken(keyA) == ContentToken(keyB) {

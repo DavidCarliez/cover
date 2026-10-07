@@ -23,7 +23,7 @@ import (
 	"github.com/DavidCarliez/cover/internal/redact/detectors"
 )
 
-func policyProxyRedactor(t *testing.T, rules ...detectors.CustomPattern) *redact.Redactor {
+func policyProxyRedactor(t testing.TB, rules ...detectors.CustomPattern) *redact.Redactor {
 	t.Helper()
 	d, err := detectors.NewRegexDetector(nil, rules)
 	if err != nil {
