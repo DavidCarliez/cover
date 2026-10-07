@@ -114,7 +114,9 @@ func TestConfiguredHTTPSelectorsProtectToolOutputEndToEnd(t *testing.T) {
 		t.Fatalf("restoration changed URL/form boundaries or HTTP framing: %s", got)
 	}
 	for name, content := range map[string]string{
-		"malformed JSON": `{"` + "pass" + `word":"cedar-private"`,
+		// A selected scalar in malformed JSON is protected in place; an
+		// object under a selected key needs the parser and is rejected.
+		"malformed JSON": `{"` + "pass" + `word":{"value":"cedar-private"}`,
 		"truncated HTTP": "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 99\r\n\r\n{}",
 		"encoded HTTP":   "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Encoding: gzip\r\n\r\ncompressed bytes",
 	} {
