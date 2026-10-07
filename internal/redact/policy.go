@@ -126,8 +126,9 @@ func (r *Redactor) transform(body []byte, session string, injectNote bool, media
 		return result, nil
 	}
 
-	occupied := map[string]struct{}{}
-	r.collectOccupied(data, protocolBusiness, "", occupied)
+	occupiedValues := map[string]struct{}{}
+	r.collectOccupied(data, protocolBusiness, "", occupiedValues)
+	occupied := newOccupiedSet(occupiedValues)
 	ctx := context.Background()
 	var cancel context.CancelFunc
 	if r.llmBudget > 0 {
@@ -292,7 +293,7 @@ func (r *Redactor) walkPolicy(
 	ctx context.Context,
 	v any,
 	session string,
-	occupied map[string]struct{},
+	occupied *occupiedSet,
 	result *TransformResult,
 	changed *bool,
 	capture bool,
@@ -433,7 +434,7 @@ func fieldRuleBefore(left, right FieldRule) bool {
 func (r *Redactor) transformUnselectedContent(
 	ctx context.Context,
 	text, session string,
-	occupied map[string]struct{},
+	occupied *occupiedSet,
 	result *TransformResult,
 	changed *bool,
 	capture bool,
@@ -512,7 +513,7 @@ func (r *Redactor) transformUnselectedContent(
 func (r *Redactor) transformJSONDocument(
 	ctx context.Context,
 	text, session string,
-	occupied map[string]struct{},
+	occupied *occupiedSet,
 	result *TransformResult,
 	changed *bool,
 	capture bool,
@@ -546,7 +547,7 @@ func (r *Redactor) transformJSONDocument(
 func (r *Redactor) transformEmbeddedString(
 	ctx context.Context,
 	text, session string,
-	occupied map[string]struct{},
+	occupied *occupiedSet,
 	result *TransformResult,
 	changed *bool,
 	capture bool,
@@ -605,7 +606,7 @@ func (r *Redactor) transformEmbeddedString(
 func (r *Redactor) transformEmbeddedFrame(
 	ctx context.Context,
 	text, session string,
-	occupied map[string]struct{},
+	occupied *occupiedSet,
 	result *TransformResult,
 	changed *bool,
 	capture bool,
@@ -623,7 +624,7 @@ func (r *Redactor) walkDecodedEmbedded(
 	ctx context.Context,
 	value any,
 	session string,
-	occupied map[string]struct{},
+	occupied *occupiedSet,
 	result *TransformResult,
 	changed *bool,
 	capture bool,
@@ -770,7 +771,7 @@ func (r *Redactor) policyTextMatches(ctx context.Context, text string) ([]detect
 	return all, nil
 }
 
-func (r *Redactor) transformString(ctx context.Context, text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, capture bool) (string, error) {
+func (r *Redactor) transformString(ctx context.Context, text, session string, occupied *occupiedSet, result *TransformResult, changed *bool, capture bool) (string, error) {
 	all, err := r.policyTextMatches(ctx, text)
 	if err != nil {
 		return "", err
@@ -781,7 +782,7 @@ func (r *Redactor) transformString(ctx context.Context, text, session string, oc
 // transformAssignmentValue preserves detector context without mapping the
 // parameter name or its delimiter. Matches are projected onto the original
 // decoded value before priority resolution and mapping, never onto an alias.
-func (r *Redactor) transformAssignmentValue(ctx context.Context, name, value, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, capture bool) (string, bool, error) {
+func (r *Redactor) transformAssignmentValue(ctx context.Context, name, value, session string, occupied *occupiedSet, result *TransformResult, changed *bool, capture bool) (string, bool, error) {
 	if value == "" || len(r.detectors) == 0 {
 		return value, false, nil
 	}
@@ -816,7 +817,7 @@ func (r *Redactor) transformAssignmentValue(ctx context.Context, name, value, se
 	return output, true, err
 }
 
-func (r *Redactor) transformFieldString(text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, rule FieldRule, capture bool) (string, error) {
+func (r *Redactor) transformFieldString(text, session string, occupied *occupiedSet, result *TransformResult, changed *bool, rule FieldRule, capture bool) (string, error) {
 	if text == "" {
 		return text, nil
 	}
@@ -836,7 +837,7 @@ func (r *Redactor) transformFieldString(text, session string, occupied map[strin
 	}}, capture)
 }
 
-func (r *Redactor) transformFieldNumber(number json.Number, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, rule FieldRule, capture bool) (json.Number, error) {
+func (r *Redactor) transformFieldNumber(number json.Number, session string, occupied *occupiedSet, result *TransformResult, changed *bool, rule FieldRule, capture bool) (json.Number, error) {
 	original := number.String()
 	action := rule.Action
 	if action == "" {
@@ -915,7 +916,7 @@ func (r *Redactor) transformFieldBool(value bool, result *TransformResult, rule 
 	return value, nil
 }
 
-func (r *Redactor) transformMatches(text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, matches []detectors.Match, capture bool) (string, error) {
+func (r *Redactor) transformMatches(text, session string, occupied *occupiedSet, result *TransformResult, changed *bool, matches []detectors.Match, capture bool) (string, error) {
 	var b strings.Builder
 	last := 0
 	err := r.applyPolicyMatches(text, session, occupied, result, changed, matches, capture, func(m detectors.Match, replacement string) {
@@ -935,7 +936,7 @@ func (r *Redactor) transformMatches(text, session string, occupied map[string]st
 
 // applyPolicyMatches shares policy decisions between ordinary text and HTML
 // span editing so detector priority, blocking and mappings have one owner.
-func (r *Redactor) applyPolicyMatches(text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, matches []detectors.Match, capture bool, emit func(detectors.Match, string)) error {
+func (r *Redactor) applyPolicyMatches(text, session string, occupied *occupiedSet, result *TransformResult, changed *bool, matches []detectors.Match, capture bool, emit func(detectors.Match, string)) error {
 	for _, m := range matches {
 		if m.Start < 0 || m.End <= m.Start || m.End > len(text) || text[m.Start:m.End] != m.Value {
 			return fmt.Errorf("%w: detector returned invalid span", ErrUnsafeRequest)

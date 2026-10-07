@@ -10,7 +10,7 @@ import (
 
 // transformSelectedString preserves numeric mapping identity across JSON,
 // HTTP and HTML string-valued representations of the same identifier.
-func (r *Redactor) transformSelectedString(value, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, rule FieldRule, capture bool) (string, error) {
+func (r *Redactor) transformSelectedString(value, session string, occupied *occupiedSet, result *TransformResult, changed *bool, rule FieldRule, capture bool) (string, error) {
 	if rule.Action == string(ActionPseudonymize) && rule.Generator == "number" {
 		number, err := r.transformFieldNumber(json.Number(value), session, occupied, result, changed, rule, capture)
 		return number.String(), err
@@ -39,7 +39,7 @@ func htmlURLAttribute(name string) bool {
 	return false
 }
 
-func (r *Redactor) transformHTMLString(ctx context.Context, text, session string, occupied map[string]struct{}, result *TransformResult, changed *bool, capture bool, budget *transformBudget, depth, embeddedDepth int, force bool) (string, bool, error) {
+func (r *Redactor) transformHTMLString(ctx context.Context, text, session string, occupied *occupiedSet, result *TransformResult, changed *bool, capture bool, budget *transformBudget, depth, embeddedDepth int, force bool) (string, bool, error) {
 	charged := false
 	check := func() error {
 		if err := ctx.Err(); err != nil {

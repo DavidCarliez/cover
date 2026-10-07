@@ -177,3 +177,23 @@ func BenchmarkTransform_KnownValueScale(b *testing.B) {
 		})
 	}
 }
+
+func BenchmarkTransform_ManyDistinctMatches(b *testing.B) {
+	d, err := detectors.NewRegexDetector([]string{"email"}, nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	var text strings.Builder
+	for i := range 3000 {
+		fmt.Fprintf(&text, "user%d@corp.example sent a long status line with ordinary words in it. ", i)
+	}
+	body, _ := json.Marshal(map[string]string{"input": text.String()})
+	b.SetBytes(int64(len(body)))
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		r := New(NewStoreWithOptions(StoreOptions{MaxEntriesPerSession: 5000}), 0, RedactorOptions{}, d)
+		if _, err := r.Transform(body, "bench", false, "allow"); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

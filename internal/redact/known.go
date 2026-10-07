@@ -88,6 +88,9 @@ type knownValues struct {
 	max      int
 	ttl      time.Duration
 	now      func() time.Time
+	// expired records the last full expiry sweep, which runs at most once a
+	// minute so adding many values stays linear.
+	expired time.Time
 }
 
 type knownSnapshot struct {
@@ -129,6 +132,10 @@ func (k *knownValues) remember(original string, template detectors.Match) bool {
 }
 
 func (k *knownValues) expireLocked(now time.Time) {
+	if now.Sub(k.expired) < time.Minute && len(k.values) < k.max {
+		return
+	}
+	k.expired = now
 	for original, value := range k.values {
 		if now.Sub(value.seen) > k.ttl {
 			delete(k.values, original)

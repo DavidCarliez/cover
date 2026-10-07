@@ -1,12 +1,14 @@
 package redact
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"index/suffixarray"
 	"sort"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,9 +37,15 @@ type sessionMappings struct {
 	forward map[string]string
 	reverse map[string]string
 	numeric map[string]bool
-	updated time.Time
 	restore *restorationSnapshot
+	// updated is read and refreshed under a read lock while a response
+	// streams, so it is atomic.
+	updated atomic.Int64
 }
+
+func (m *sessionMappings) touch(now time.Time) { m.updated.Store(now.UnixNano()) }
+
+func (m *sessionMappings) lastUsed() time.Time { return time.Unix(0, m.updated.Load()) }
 
 // restorationSnapshot is immutable after construction, so callers can use it
 // without holding Store.mu. A session invalidates its snapshot whenever a new
@@ -133,40 +141,49 @@ func normalizeSession(session string) string {
 
 func (s *Store) cleanupLocked(now time.Time) {
 	for id, m := range s.sessions {
-		if now.Sub(m.updated) > s.opts.SessionTTL {
+		if now.Sub(m.lastUsed()) > s.opts.SessionTTL {
 			delete(s.sessions, id)
 		}
 	}
 }
 
-func (s *Store) sessionLocked(id string, create bool) (*sessionMappings, error) {
+func (s *Store) sessionLocked(id string, create bool) *sessionMappings {
 	id = normalizeSession(id)
 	now := s.opts.Now()
 	s.cleanupLocked(now)
 	if m, ok := s.sessions[id]; ok {
-		m.updated = now
-		return m, nil
+		m.touch(now)
+		return m
 	}
 	if !create {
-		return nil, nil
+		return nil
 	}
 	if len(s.sessions) >= s.opts.MaxSessions {
-		return nil, fmt.Errorf("mapping session capacity reached")
+		// Evict the least recently used session rather than refusing new
+		// conversations. Its later responses can no longer be restored.
+		oldest, oldestUsed := "", now
+		for candidate, m := range s.sessions {
+			if used := m.lastUsed(); oldest == "" || used.Before(oldestUsed) {
+				oldest, oldestUsed = candidate, used
+			}
+		}
+		delete(s.sessions, oldest)
 	}
-	m := &sessionMappings{forward: map[string]string{}, reverse: map[string]string{}, numeric: map[string]bool{}, updated: now}
+	m := &sessionMappings{forward: map[string]string{}, reverse: map[string]string{}, numeric: map[string]bool{}}
+	m.touch(now)
 	s.sessions[id] = m
-	return m, nil
+	return m
 }
 
 // Map returns a stable reversible text fake. generate receives a collision
 // retry number.
-func (s *Store) Map(session, original string, occupied map[string]struct{}, generate func(int) (string, error)) (string, error) {
+func (s *Store) Map(session, original string, occupied *occupiedSet, generate func(int) (string, error)) (string, error) {
 	return s.mapValue(session, original, original, false, occupied, generate)
 }
 
 // MapNumber keeps numeric mappings in a separate forward namespace so a JSON
 // number and a JSON string with the same spelling can coexist in one session.
-func (s *Store) MapNumber(session, original string, occupied map[string]struct{}, generate func(int) (string, error)) (string, error) {
+func (s *Store) MapNumber(session, original string, occupied *occupiedSet, generate func(int) (string, error)) (string, error) {
 	return s.mapValue(session, numberMappingIdentity(original), original, true, occupied, generate)
 }
 
@@ -174,59 +191,99 @@ func numberMappingIdentity(original string) string {
 	return "\x00number:" + original
 }
 
-func (s *Store) mapValue(session, identity, original string, numeric bool, occupied map[string]struct{}, generate func(int) (string, error)) (string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	m, err := s.sessionLocked(session, true)
-	if err != nil {
-		return "", err
+func (s *Store) mapValue(session, identity, original string, numeric bool, occupied *occupiedSet, generate func(int) (string, error)) (string, error) {
+	existing := func() (string, bool) {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		fake, ok := s.sessionLocked(session, true).forward[identity]
+		return fake, ok
 	}
-	if fake, ok := m.forward[identity]; ok {
-		// The request may already contain this fake, for example in history
-		// that a client kept unrestored. It still denotes the same original.
+	// The request may already contain an existing fake, for example in
+	// history that a client kept unrestored. It still denotes the same value.
+	if fake, ok := existing(); ok {
 		return fake, nil
-	}
-	if len(m.forward) >= s.opts.MaxEntriesPerSession {
-		return "", fmt.Errorf("mapping entry capacity reached")
 	}
 	for attempt := range 256 {
 		fake, err := generate(attempt)
 		if err != nil {
 			return "", fmt.Errorf("replacement generation failed")
 		}
-		if fake == "" || fake == original {
+		// Search the request outside the store lock; it can be large.
+		if fake == "" || fake == original || occupied.contains(fake) {
 			continue
 		}
-		if collidesWithOccupied(fake, occupied) {
-			continue
+		s.mu.Lock()
+		m := s.sessionLocked(session, true)
+		if current, ok := m.forward[identity]; ok {
+			s.mu.Unlock()
+			return current, nil
 		}
-		if _, isTextOriginal := m.forward[fake]; isTextOriginal {
-			continue
+		if len(m.forward) >= s.opts.MaxEntriesPerSession {
+			s.mu.Unlock()
+			return "", fmt.Errorf("mapping entry capacity reached")
 		}
-		if _, isNumberOriginal := m.forward[numberMappingIdentity(fake)]; isNumberOriginal {
-			continue
+		_, isTextOriginal := m.forward[fake]
+		_, isNumberOriginal := m.forward[numberMappingIdentity(fake)]
+		_, exists := m.reverse[fake]
+		if !isTextOriginal && !isNumberOriginal && !exists {
+			m.forward[identity] = fake
+			m.reverse[fake] = original
+			if numeric {
+				m.numeric[fake] = true
+			}
+			m.restore = nil
+			s.mu.Unlock()
+			return fake, nil
 		}
-		if _, exists := m.reverse[fake]; exists {
-			continue
-		}
-		m.forward[identity] = fake
-		m.reverse[fake] = original
-		if numeric {
-			m.numeric[fake] = true
-		}
-		m.restore = nil
-		return fake, nil
+		s.mu.Unlock()
 	}
 	return "", fmt.Errorf("could not allocate collision-free replacement")
 }
 
-func collidesWithOccupied(candidate string, occupied map[string]struct{}) bool {
-	for value := range occupied {
-		if value == candidate || strings.Contains(value, candidate) {
-			return true
+// occupiedSet holds every string of one request. A new fake must not occur
+// inside any of them, or restoration could not tell the fake from content
+// that the request already carried.
+type occupiedSet struct {
+	values map[string]struct{}
+	mu     sync.Mutex
+	corpus []byte
+	index  *suffixarray.Index
+	checks int
+}
+
+func newOccupiedSet(values map[string]struct{}) *occupiedSet {
+	return &occupiedSet{values: values}
+}
+
+func (o *occupiedSet) contains(candidate string) bool {
+	if o == nil || len(o.values) == 0 {
+		return false
+	}
+	if _, ok := o.values[candidate]; ok {
+		return true
+	}
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.corpus == nil {
+		size := 0
+		for value := range o.values {
+			size += len(value) + 1
+		}
+		o.corpus = make([]byte, 0, size)
+		for value := range o.values {
+			o.corpus = append(append(o.corpus, value...), 0)
 		}
 	}
-	return false
+	// Index a large request once it needs repeated searches, so allocating
+	// many fakes costs one index build instead of one scan per candidate.
+	o.checks++
+	if o.index == nil && o.checks > 8 && len(o.corpus) > 64<<10 {
+		o.index = suffixarray.New(o.corpus)
+	}
+	if o.index != nil {
+		return len(o.index.Lookup([]byte(candidate), 1)) > 0
+	}
+	return bytes.Contains(o.corpus, []byte(candidate))
 }
 
 func (s *Store) PlaceholderFor(value string) string {
@@ -237,7 +294,7 @@ func (s *Store) PlaceholderFor(value string) string {
 	return fake
 }
 
-func (s *Store) PlaceholderForSession(session, value string, occupied map[string]struct{}) (string, error) {
+func (s *Store) PlaceholderForSession(session, value string, occupied *occupiedSet) (string, error) {
 	return s.Map(session, value, occupied, func(attempt int) (string, error) {
 		return placeholderOpen + s.hashValue(value, attempt) + placeholderClose, nil
 	})
@@ -287,6 +344,8 @@ func (s *Store) restorationSnapshot(session string) *restorationSnapshot {
 		s.mu.RUnlock()
 		return nil
 	}
+	// Restoring a response keeps its session alive for the whole stream.
+	m.touch(s.opts.Now())
 	if m.restore != nil {
 		snapshot := m.restore
 		s.mu.RUnlock()
@@ -341,6 +400,14 @@ func (s *Store) SessionStats() (sessions, entries int) {
 		entries += len(m.forward)
 	}
 	return len(s.sessions), entries
+}
+
+// HasSession reports whether session currently holds mappings.
+func (s *Store) HasSession(session string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cleanupLocked(s.opts.Now())
+	return s.sessions[normalizeSession(session)] != nil
 }
 
 func (s *Store) DeleteSession(session string) {

@@ -441,6 +441,9 @@ sessions and restarts. Different installations produce different pseudonyms.
 The key cannot recover original values. Restoration uses bounded mappings held
 only in process memory. Mappings are separated by `X-Cover-Session`, expire
 after the configured TTL, and are deleted when an isolated request completes.
+Restoring a response keeps its session alive. When `mappings.max_sessions` is
+reached, the least recently used session is evicted instead of refusing new
+conversations.
 Back up the key only if stable pseudonym continuity matters.
 
 ## Inspect, diagnose, and monitor

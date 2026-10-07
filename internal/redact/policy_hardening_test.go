@@ -373,11 +373,27 @@ func TestMappingCleanupAndBounds(t *testing.T) {
 	if _, err := s.PlaceholderForSession("a", "two", nil); err == nil {
 		t.Fatal("expected per-session capacity error")
 	}
+	now = now.Add(time.Second)
 	if _, err := s.PlaceholderForSession("b", "one", nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.PlaceholderForSession("c", "one", nil); err == nil {
-		t.Fatal("expected session capacity error")
+	// A full store evicts the least recently used session instead of
+	// refusing a new conversation.
+	now = now.Add(time.Second)
+	if _, err := s.PlaceholderForSession("c", "one", nil); err != nil {
+		t.Fatalf("new session was refused at capacity: %v", err)
+	}
+	if s.HasSession("a") || !s.HasSession("b") || !s.HasSession("c") {
+		t.Fatal("capacity did not evict the least recently used session")
+	}
+	// Restoring a response keeps a session alive.
+	now = now.Add(50 * time.Second)
+	if s.restorationSnapshot("b") == nil {
+		t.Fatal("session b has no mappings")
+	}
+	now = now.Add(30 * time.Second)
+	if !s.HasSession("b") || s.HasSession("c") {
+		t.Fatal("restoration did not refresh the session TTL")
 	}
 	now = now.Add(2 * time.Minute)
 	if sessions, entries := s.SessionStats(); sessions != 0 || entries != 0 {
@@ -632,5 +648,26 @@ func TestMaskRevealsAtMostASixth(t *testing.T) {
 		if got := maskValue(value); got != want {
 			t.Errorf("maskValue(%q)=%q, want %q", value, got, want)
 		}
+	}
+}
+
+func TestOccupiedSetFindsSubstringsInLargeRequests(t *testing.T) {
+	values := map[string]struct{}{}
+	for i := range 2000 {
+		values[fmt.Sprintf("prefix %d %s suffix", i, strings.Repeat("x", 64))] = struct{}{}
+	}
+	values["contains host-abc123 inside"] = struct{}{}
+	occupied := newOccupiedSet(values)
+	for range 20 {
+		if !occupied.contains("host-abc123") || occupied.contains("host-zzz999") {
+			t.Fatal("occupied lookup is wrong")
+		}
+	}
+	if occupied.index == nil {
+		t.Fatal("repeated searches of a large request did not build an index")
+	}
+	var nilSet *occupiedSet
+	if nilSet.contains("x") {
+		t.Fatal("nil set reported a collision")
 	}
 }
