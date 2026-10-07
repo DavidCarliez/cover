@@ -205,3 +205,29 @@ func TestDetectorsInspectParameterAndCookieNames(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectedHTMLFieldsAndMultipartPartsInUnparsedText(t *testing.T) {
+	for name, tc := range map[string]struct {
+		rule FieldRule
+		text string
+	}{
+		"noscript input":       {keyAliasRule("password"), `<div><noscript><input name="password" value="` + leakMarker + `"></noscript></div>`},
+		"meta content":         {keyAliasRule("csrf_token"), `<html><head><meta name="csrf_token" content="` + leakMarker + `"></head><body>x</body></html>`},
+		"prefixed page":        {formAliasRule("password"), "Page:\n<form><input type=password id='password' value='" + leakMarker + "'></form>"},
+		"attribute order":      {keyAliasRule("password"), `<input value=` + leakMarker + ` type="password" name="PASSWORD">`},
+		"comment":              {keyAliasRule("password"), `<p>x</p><!-- <input name="password" value="` + leakMarker + `"> -->`},
+		"multipart form part":  {formAliasRule("password"), "--b\r\nContent-Disposition: form-data; name=\"password\"\r\n\r\n" + leakMarker + "\r\n--b--\r\n"},
+		"multipart with types": {keyAliasRule("api_key"), "--b\nContent-Disposition: form-data; name=\"api_key\"\nContent-Type: text/plain\n\n" + leakMarker + "\n--b--"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			assertContentProtected(t, structuredPolicyRedactor(tc.rule), tc.text)
+		})
+	}
+	unrelated := `<input name="username" value="alice"><meta name="description" content="hello">`
+	r := structuredPolicyRedactor(keyAliasRule("password"))
+	body, _ := json.Marshal(map[string]string{"input": unrelated})
+	result, err := r.Transform(body, "s", false, "allow")
+	if err != nil || !strings.Contains(string(result.Body), "alice") || !strings.Contains(string(result.Body), "hello") {
+		t.Fatalf("unselected fields changed: %v %s", err, result.Body)
+	}
+}

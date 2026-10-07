@@ -382,11 +382,13 @@ Recognized HTML documents, fragments, HTML fences, HTTP HTML bodies and literal
 curl HTML bodies use the same configured policies. No local model, browser
 execution or additional feature flag is required.
 
-- `keys` and `form_fields` select input/button values, textarea contents, and
-  select option values/text. Candidate names come from `name`, `id`, associated
+- `keys` and `form_fields` select input/button values, textarea contents,
+  select option values/text, and `meta`/`param` content or value attributes.
+  Candidate names come from `name`, `id`, `property`, `itemprop`, associated
   labels and ARIA labels. Password controls also have the candidate name
-  `password`, even when their actual name differs. Labels must match a configured
-  selector; Cover does not infer that an arbitrary label denotes private data.
+  `password`, even when their actual name differs. Labels must match a
+  configured selector; Cover does not infer that an arbitrary label denotes
+  private data.
 - Named attribute values use `keys` rules. Other attributes and text use the
   configured detectors. Entity references are decoded before inspection.
   Text is joined across inline elements within a block, with normalized
@@ -402,6 +404,12 @@ quotes, entity spelling, tag casing and implied structure can normalize.
 Restoration preserves decoded values, not byte-for-byte markup formatting.
 Special characters remain data rather than becoming active HTML or closing
 a JSON script. HTTP content lengths and curl quoting are updated as needed.
+
+Field tags that the parser does not own, such as an `<input>` inside
+`<noscript>` or a comment, in HTML preceded by other text, or in a custom
+element, are still matched by name in plain text. Multipart `form-data` parts
+whose `name` is selected by a `keys` or `form_fields` rule are protected the
+same way.
 
 Incomplete tags, duplicate attributes, unsafe parser recovery, unsupported
 constructs and exhausted budgets fail closed. The parser does not execute or

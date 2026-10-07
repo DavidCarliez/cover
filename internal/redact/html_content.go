@@ -511,7 +511,8 @@ func transformHTMLDocument(text string, policy htmlContentPolicy, budget *htmlIn
 			attr := &node.Attr[i]
 			before := attr.Val
 			value := before
-			if field && attr.Key == "value" && node.Data != "textarea" && node.Data != "select" && policy.Field != nil {
+			fieldValue := attr.Key == "value" || attr.Key == "content" && node.Data == "meta"
+			if field && fieldValue && node.Data != "textarea" && node.Data != "select" && policy.Field != nil {
 				value, err = policy.Field(names, before)
 			} else if policy.Attribute != nil {
 				name := attr.Key
@@ -720,7 +721,7 @@ func collectHTMLFields(elements []*html.Node, budget *htmlInspectionBudget) (map
 			continue
 		}
 		switch node.Data {
-		case "input", "textarea", "select", "option", "button":
+		case "input", "textarea", "select", "option", "button", "meta", "param", "data":
 		default:
 			continue
 		}
@@ -747,6 +748,9 @@ func collectHTMLFields(elements []*html.Node, budget *htmlInspectionBudget) (map
 			add("password")
 		}
 		add(htmlAttr(node, "aria-label"))
+		// Metadata pairs a name with a content or value attribute.
+		add(htmlAttr(node, "property"))
+		add(htmlAttr(node, "itemprop"))
 		for _, label := range labels[htmlAttr(node, "id")] {
 			add(label)
 			add(strings.TrimSuffix(label, ":"))
