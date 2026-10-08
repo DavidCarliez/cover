@@ -2,6 +2,7 @@ package redact
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
 	"strings"
@@ -212,8 +213,8 @@ func TestKnownValuesExpireAndEvict(t *testing.T) {
 	if _, ok := known.values["value-24"]; !ok {
 		t.Fatal("newest value was evicted")
 	}
-	if matches := known.current().matches("x value-24 y"); len(matches) != 1 || matches[0].Value != "value-24" {
-		t.Fatalf("matches=%+v", matches)
+	if matches, err := known.current().matches("x value-24 y"); err != nil || len(matches) != 1 || matches[0].Value != "value-24" {
+		t.Fatalf("matches=%+v err=%v", matches, err)
 	}
 }
 
@@ -221,13 +222,13 @@ func TestCachedKnownValuesStillExpire(t *testing.T) {
 	now := time.Unix(0, 0)
 	known := newKnownValues(10, time.Hour, func() time.Time { return now })
 	known.remember("first-value", detectors.Match{Rule: "r", Action: string(ActionRedact)})
-	if known.current().matches("first-value") == nil {
-		t.Fatal("value is not protected")
+	if matches, err := known.current().matches("first-value"); err != nil || matches == nil {
+		t.Fatalf("value is not protected: %v", err)
 	}
 	// Nothing new is remembered, so only expiry can drop the cached matcher.
 	now = now.Add(2 * time.Hour)
 	if snapshot := known.current(); snapshot != nil {
-		t.Fatalf("expired value is still protected: %+v", snapshot.matches("first-value"))
+		t.Fatalf("expired value is still protected: %+v", snapshot.parts)
 	}
 	if len(known.values) != 0 {
 		t.Fatalf("expired value is still retained: %d", len(known.values))
@@ -329,7 +330,10 @@ func TestKnownMatchPrioritySurvivesContainment(t *testing.T) {
 	const outer, inner = "prefix-central-value-suffix", "central-value"
 	known.remember(outer, detectors.Match{Rule: "outer", Action: "block", Priority: 10})
 	known.remember(inner, detectors.Match{Rule: "inner", Action: "block", Priority: 30})
-	matches := known.current().matches(outer)
+	matches, err := known.current().matches(outer)
+	if err != nil {
+		t.Fatal(err)
+	}
 	matches = append(matches, detectors.Match{Rule: "exception", Action: "allow", Priority: 20, Value: outer, End: len(outer)})
 	selected, _ := selectNonOverlapping(outer, matches)
 	if len(selected) != 1 || selected[0].Rule != "inner" || selected[0].Action != "block" {
@@ -374,6 +378,24 @@ func TestOverlappingKnownNumbersUseUntypedUnion(t *testing.T) {
 			t.Fatalf("split=%v: numeric union was not protected: %s", split, result.Body)
 		}
 		assertPolicyJSONEqual(t, r.RestoreResponseForSession(result.Body, "application/json", "s"), body)
+	}
+}
+
+func TestNestedKnownValuesBeyondBudgetFailClosed(t *testing.T) {
+	r := structuredPolicyRedactor(aliasKeyRule("selected", "selected"))
+	template := detectors.Match{Rule: "selected", Action: string(ActionPseudonymize), Generator: "alias", Priority: 10}
+	for k := unboundedKnownValueLen; k <= 400; k++ {
+		r.store.known.remember(strings.Repeat("a", k), template)
+	}
+	// Every nested value is reported at every offset where it occurs: 13
+	// lengths at the first offset, 12 at the next, and so on.
+	matches, err := r.store.known.current().matches("x " + strings.Repeat("a", 20) + " y")
+	if err != nil || len(matches) != 91 {
+		t.Fatalf("matches=%d err=%v", len(matches), err)
+	}
+	body := []byte(`{"text":"` + strings.Repeat("a", 400) + `"}`)
+	if _, err := r.Transform(body, "s", false, "allow"); !errors.Is(err, ErrUnsafeRequest) {
+		t.Fatalf("quadratic nested matches were not rejected: %v", err)
 	}
 }
 

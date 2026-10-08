@@ -2,6 +2,7 @@ package redact
 
 import (
 	"encoding/json"
+	"errors"
 	"html"
 	"net/url"
 	"sort"
@@ -273,12 +274,25 @@ func isJSONNumberText(text string) bool {
 	return first == '-' || first >= '0' && first <= '9'
 }
 
+// Nested known values report one match each at every position where they
+// occur. The budget bounds the matches one text can produce, so that values
+// nested inside one another at every offset cannot make a request cost
+// quadratic time and memory. A text that needs more is rejected.
+const (
+	knownMatchBudgetPerByte = 4
+	knownMatchBudgetBase    = 4096
+	knownMatchBudgetMax     = 1_000_000
+)
+
+var errKnownMatchBudget = errors.New("known-value match budget exceeded")
+
 // matches preserves every original span and policy. Only the policy resolver
 // may discard or combine overlapping matches.
-func (s *knownSnapshot) matches(text string) []detectors.Match {
+func (s *knownSnapshot) matches(text string) ([]detectors.Match, error) {
 	if s == nil {
-		return nil
+		return nil, nil
 	}
+	budget := min(knownMatchBudgetPerByte*len(text)+knownMatchBudgetBase, knownMatchBudgetMax)
 	var out []detectors.Match
 	for _, part := range s.parts {
 		// Advance by start, not end, so contained and crossing matches survive.
@@ -288,14 +302,22 @@ func (s *knownSnapshot) matches(text string) []detectors.Match {
 				break
 			}
 			pos = start + 1
+			exhausted := false
 			part.matcher.eachAt(text, start, func(end, index int) {
+				if len(out) >= budget {
+					exhausted = true
+					return
+				}
 				match := part.templates[index]
 				match.Value, match.Start, match.End = text[start:end], start, end
 				out = append(out, match)
 			})
+			if exhausted {
+				return nil, errKnownMatchBudget
+			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 // renew refreshes existing originals whose occurrences survived allow-rule

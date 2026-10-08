@@ -762,7 +762,10 @@ func chooseClusterMatch(text string, cluster []detectors.Match, start, end int) 
 }
 
 func (r *Redactor) policyTextMatches(ctx context.Context, text string) ([]detectors.Match, error) {
-	all := r.knownSnapshot(ctx).matches(text)
+	all, err := r.knownSnapshot(ctx).matches(text)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrUnsafeRequest, err)
+	}
 	all = append(all, r.textSelectorMatches(text)...)
 	for _, det := range r.detectors {
 		matches, err := safeDetect(ctx, det, text)
