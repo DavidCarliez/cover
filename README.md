@@ -331,6 +331,8 @@ Header-only captures are supported: a request/status line and complete header
 lines can end without a blank separator or body. Their `Content-Length` and
 encoding headers describe the omitted body and are preserved. A blank separator
 marks a full message instead; body-length and encoding checks still apply.
+A request without `Content-Length` keeps the text that follows, up to the
+next message, as its body.
 
 These selectors apply to HTTP text inside model-request JSON, such as captured
 tool output. They do not filter the model API connection's own headers, URL
