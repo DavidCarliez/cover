@@ -211,7 +211,7 @@ func curlValueOption(word string) (option string, offset int) {
 			"--libcurl", "--limit-rate", "--local-port", "--login-options", "--mail-auth", "--mail-from", "--mail-rcpt",
 			"--max-filesize", "--max-redirs", "--max-time", "--netrc-file", "--noproxy", "--oauth2-bearer",
 			"--output", "--output-dir", "--parallel-max", "--parallel-max-host", "--pass", "--pinnedpubkey",
-			"--proto", "--proto-default", "--proto-redir", "--proxy", "--proxy-cacert", "--proxy-capath",
+			"--preproxy", "--proto", "--proto-default", "--proto-redir", "--proxy", "--proxy-cacert", "--proxy-capath",
 			"--proxy-cert", "--proxy-cert-type", "--proxy-ciphers", "--proxy-crlfile", "--proxy-header",
 			"--proxy-key", "--proxy-key-type", "--proxy-pass", "--proxy-pinnedpubkey", "--proxy-service-name",
 			"--proxy-tls13-ciphers", "--proxy-tlsauthtype", "--proxy-tlspassword", "--proxy-tlsuser", "--proxy-user", "--proxy1.0",
@@ -222,7 +222,7 @@ func curlValueOption(word string) (option string, offset int) {
 			"--stderr", "--telnet-option", "--tftp-blksize", "--time-cond", "--tls-max", "--tls13-ciphers",
 			"--tlsauthtype", "--tlspassword", "--tlsuser", "--trace", "--trace-ascii", "--trace-config",
 			"--unix-socket", "--upload-file", "--upload-flags", "--url", "--url-query", "--user", "--user-agent",
-			"--vlan-priority", "--write-out":
+			"--variable", "--vlan-priority", "--write-out":
 			return word, len(word)
 		}
 	} else if len(word) > 1 && word[0] == '-' {

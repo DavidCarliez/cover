@@ -194,7 +194,7 @@ func TestCurlProseAndShellCompositionAreNotRejected(t *testing.T) {
 }
 
 func TestCurlOptionArgumentsAreNotCredentials(t *testing.T) {
-	for _, option := range []string{"--output", "-o", "-so", "--cookie-jar", "--write-out", "--request", "--header"} {
+	for _, option := range []string{"--output", "-o", "-so", "--cookie-jar", "--write-out", "--request", "--header", "--preproxy", "--variable"} {
 		for _, suffix := range []string{"", " | cat"} {
 			r := structuredPolicyRedactor(FieldRule{Name: "auth", Headers: []string{"Authorization"}, Action: "block"})
 			text := "curl " + option + " -unrelated https://x.example" + suffix
