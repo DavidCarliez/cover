@@ -41,6 +41,10 @@ The installer downloads the release for your OS and CPU, verifies it against
 the published SHA-256 checksums, installs it atomically to
 `~/.local/bin/cover`, configures selected clients, and starts the proxy.
 
+Configuration and shell-profile updates preserve symlinks and existing file
+permissions, including relative links beneath linked directories. If a link's
+target does not exist yet, Cover creates the target without replacing the link.
+
 ```sh
 curl -fsSL https://raw.githubusercontent.com/DavidCarliez/cover/main/scripts/install.sh | bash
 ```
@@ -234,8 +238,10 @@ explicit `allow` key rule stay unchanged.
 
 This memory is held only in process memory, bounded by
 `mappings.max_known_values` (default 50,000) and
-`mappings.known_value_ttl_minutes` (default 24 hours). After a restart, a
-value is protected again once a rule matches it.
+`mappings.known_value_ttl_minutes` (default 24 hours). Protective occurrences
+renew each original's lifetime, including when overlapping originals share one
+output placeholder. After a restart, a value is protected again once a rule
+matches it.
 
 | Action | What the LLM receives | Response behavior |
 | --- | --- | --- |
@@ -252,6 +258,10 @@ covers the whole overlapping span is applied; if none does, the span becomes
 one placeholder. An `allow` match only exempts protective matches that it
 fully contains and that do not outrank it, so allowing `corp.example.com`
 does not expose `alice@corp.example.com`.
+Known-value matching retains the original spans and priorities until this
+resolution step; rebuilding its matcher does not change policy precedence.
+An overlap union uses a placeholder rather than applying a numeric or other
+typed generator to a synthetic combined value.
 
 Pseudonym generators: `ipv4`, `ipv6`, `hostname`, `domain`, `fqdn`, `email`,
 `username`, `password`, `secret`, `uuid`, `url`, `alias`, and `number`.
@@ -339,8 +349,11 @@ or read `@file` contents. A command with shell composition such as pipes or
 `;`, or one whose changed argument contains shell expansion, is not
 rewritten as a command: it is scanned as plain text, and values are replaced
 in place. An `Authorization` rule still protects `-u`, `--user`, `-U`,
-`--proxy-user` and `--oauth2-bearer` values there, and in curl commands
-anywhere in text, such as scripts and prose; shell variables stay unchanged.
+`--proxy-user` and `--oauth2-bearer` values there, including attached values in
+combined short options. Arguments belonging to other options are not treated
+as credential options, and `--` ends option parsing. In mixed literal/variable
+credential words, only literal portions are replaced; shell expansions, quotes
+and authentication separators stay unchanged.
 
 Detectors also inspect query parameter names, value-less parameters and
 cookie names.
@@ -357,7 +370,8 @@ Malformed recognizable JSON, NDJSON and JSON-like source with a selected key
 are not rejected when every selected value is a scalar: those values are
 protected as plain-text assignments. Malformed JSON that gives a selected key
 an object, an array or an unterminated string, puts its value on another
-line, or spells the key with escapes is rejected, not forwarded.
+line, or spells the key with escapes is rejected, not forwarded. Candidate
+names use JSON decoding, including escaped slashes and Unicode surrogate pairs.
 Malformed HTTP framing, unsupported encoded/chunked wire bodies, and exhausted
 parser budgets also fail closed. A standalone URL or form with a literal `%`,
 such as `?progress=50%`, is scanned as plain text, unless a selected

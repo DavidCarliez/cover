@@ -563,7 +563,8 @@ func TestOverlapResolutionNeverExposesProtectedBytes(t *testing.T) {
 				tc.matches[i].Value = text[tc.matches[i].Start:tc.matches[i].End]
 			}
 			var got []string
-			for _, s := range selectNonOverlapping(text, tc.matches) {
+			selected, _ := selectNonOverlapping(text, tc.matches)
+			for _, s := range selected {
 				if s.Value != text[s.Start:s.End] {
 					t.Fatalf("selected value %q does not match span", s.Value)
 				}

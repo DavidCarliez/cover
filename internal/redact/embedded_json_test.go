@@ -292,6 +292,25 @@ func TestMalformedRecognizedEmbeddedJSONFailsClosedWithoutRejectingSource(t *tes
 	}
 }
 
+func TestSelectedJSONNamesUseJSONEscapes(t *testing.T) {
+	for _, tc := range []struct{ name, encoded string }{
+		{"account/name", `"account\/name"`},
+		{"account\U0001D11E", `"account\uD834\uDD1E"`},
+	} {
+		r := structuredPolicyRedactor(aliasKeyRule("selected", tc.name))
+		valid := `{` + tc.encoded + `:"sample-value"}`
+		body, _ := json.Marshal(map[string]string{"content": valid})
+		result := mustTransform(t, r, "s", body)
+		if strings.Contains(string(result.Body), "sample-value") {
+			t.Fatal("decoded selected name was not protected")
+		}
+		body, _ = json.Marshal(map[string]string{"content": strings.TrimSuffix(valid, "}")})
+		if _, err := r.Transform(body, "s", false, "allow"); !errors.Is(err, ErrUnsafeRequest) {
+			t.Fatalf("incomplete selected JSON error=%v", err)
+		}
+	}
+}
+
 func TestNestedJSONEncodingFencesAndResultPrefixes(t *testing.T) {
 	r := structuredPolicyRedactor(aliasKeyRule("password", "password"))
 	inner := `{"password":"CUSTOMER-ALPHA"}`

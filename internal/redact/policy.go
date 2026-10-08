@@ -674,7 +674,7 @@ func safeDetect(ctx context.Context, det detectors.Detector, text string) (match
 // protective matches form one cluster: a block wins, otherwise the
 // highest-priority match covering the whole cluster is used, and a cluster
 // that no single match covers becomes one placeholder.
-func selectNonOverlapping(text string, matches []detectors.Match) []detectors.Match {
+func selectNonOverlapping(text string, matches []detectors.Match) (selected, protected []detectors.Match) {
 	byPriority := func(list []detectors.Match) {
 		sort.SliceStable(list, func(i, j int) bool {
 			if list[i].Priority != list[j].Priority {
@@ -712,7 +712,6 @@ func selectNonOverlapping(text string, matches []detectors.Match) []detectors.Ma
 	}
 	sort.SliceStable(kept, func(i, j int) bool { return kept[i].Start < kept[j].Start })
 
-	var selected []detectors.Match
 	for i := 0; i < len(kept); {
 		start, end := kept[i].Start, kept[i].End
 		j := i + 1
@@ -740,7 +739,7 @@ func selectNonOverlapping(text string, matches []detectors.Match) []detectors.Ma
 		}
 	}
 	sort.Slice(selected, func(i, j int) bool { return selected[i].Start < selected[j].Start })
-	return selected
+	return selected, kept
 }
 
 func chooseClusterMatch(text string, cluster []detectors.Match, start, end int) detectors.Match {
@@ -949,7 +948,7 @@ func (r *Redactor) applyPolicyMatches(text, session string, occupied *occupiedSe
 	if len(matches) == 0 {
 		return nil
 	}
-	selected := selectNonOverlapping(text, matches)
+	selected, protected := selectNonOverlapping(text, matches)
 	for _, m := range selected {
 		action := m.Action
 		if action == "" {
@@ -1024,6 +1023,7 @@ func (r *Redactor) applyPolicyMatches(text, session string, occupied *occupiedSe
 			*changed = true
 		}
 	}
+	r.store.known.renew(protected)
 	return nil
 }
 

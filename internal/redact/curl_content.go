@@ -47,6 +47,11 @@ func transformCurlCommand(text string, left, right int, policy httpContentPolicy
 	if err != nil {
 		return "", errCurlUnsupported
 	}
+	for _, word := range words {
+		if word.value == "--" {
+			return "", errCurlUnsupported
+		}
+	}
 	query := false
 	for _, word := range words {
 		if word.value == "-G" || word.value == "--get" {
@@ -92,6 +97,10 @@ func transformCurlCommand(text string, left, right int, policy httpContentPolicy
 				transformed = name + ": " + mapped
 			}
 		case "-u", "--user", "--oauth2-bearer", "--proxy-user", "-U":
+			if word.dynamic {
+				// Preserve expansion syntax before any mapping can remember it.
+				return "", errCurlUnsupported
+			}
 			// Credentials become an Authorization header, so an explicit
 			// Authorization policy owns them; detectors inspect them otherwise.
 			if policy.HeaderSelected != nil && policy.HeaderSelected("Authorization") {
@@ -171,38 +180,72 @@ func hasHTTPScheme(value string) bool {
 		len(value) >= 8 && strings.EqualFold(value[:8], "https://")
 }
 
-// curlValueOptions take the next word as their value.
-const curlValueOptions = "HbduUeFAxoT"
+// curlShortValueOptions lists argument-taking short options as two-byte names.
+// Both structured and in-place scanning use the same option grammar.
+const curlShortValueOptions = "-A-b-c-C-d-D-e-E-F-H-K-m-o-P-Q-r-t-T-u-U-w-x-X-y-Y-z"
 
-// curlFlagOptions take no value and may precede a value option in one word.
-const curlFlagOptions = "sSkvLfiIgGjJNOqRZ46"
+const curlFlagOptions = "aBfFgGiIjJkKlLMnNOpqRsSvVZ012346:#"
+
+// curlValueOption returns the option and the start of its attached argument.
+// An offset at the end of word means that the next word is the argument.
+func curlValueOption(word string) (option string, offset int) {
+	if strings.HasPrefix(word, "--") {
+		if name, _, found := strings.Cut(word, "="); found {
+			return name, len(name) + 1
+		}
+		// Argument-taking long options from curl --help all. Flag options
+		// do not consume the next word, including their --no- variants.
+		switch word {
+		case "--abstract-unix-socket", "--alt-svc", "--aws-sigv4",
+			"--cacert", "--capath", "--cert", "--cert-type", "--ciphers",
+			"--config", "--connect-timeout", "--connect-to", "--continue-at",
+			"--cookie", "--cookie-jar", "--create-file-mode", "--crlfile", "--curves",
+			"--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode",
+			"--delegation", "--dns-interface", "--dns-ipv4-addr", "--dns-ipv6-addr", "--dns-servers",
+			"--doh-url", "--dump-header", "--ech", "--egd-file", "--engine",
+			"--etag-compare", "--etag-save", "--expect100-timeout", "--form", "--form-string",
+			"--ftp-account", "--ftp-alternative-to-user", "--ftp-method", "--ftp-port", "--ftp-ssl-ccc-mode",
+			"--happy-eyeballs-timeout-ms", "--haproxy-clientip", "--header", "--help",
+			"--hostpubmd5", "--hostpubsha256", "--hsts", "--interface", "--ip-tos", "--ipfs-gateway",
+			"--json", "--keepalive-cnt", "--keepalive-time", "--key", "--key-type", "--knownhosts", "--krb",
+			"--libcurl", "--limit-rate", "--local-port", "--login-options", "--mail-auth", "--mail-from", "--mail-rcpt",
+			"--max-filesize", "--max-redirs", "--max-time", "--netrc-file", "--noproxy", "--oauth2-bearer",
+			"--output", "--output-dir", "--parallel-max", "--parallel-max-host", "--pass", "--pinnedpubkey",
+			"--proto", "--proto-default", "--proto-redir", "--proxy", "--proxy-cacert", "--proxy-capath",
+			"--proxy-cert", "--proxy-cert-type", "--proxy-ciphers", "--proxy-crlfile", "--proxy-header",
+			"--proxy-key", "--proxy-key-type", "--proxy-pass", "--proxy-pinnedpubkey", "--proxy-service-name",
+			"--proxy-tls13-ciphers", "--proxy-tlsauthtype", "--proxy-tlspassword", "--proxy-tlsuser", "--proxy-user", "--proxy1.0",
+			"--pubkey", "--quote", "--random-file", "--range", "--rate", "--referer", "--request",
+			"--request-target", "--resolve", "--retry", "--retry-delay", "--retry-max-time",
+			"--sasl-authzid", "--service-name", "--sigalgs", "--socks4", "--socks4a", "--socks5",
+			"--socks5-gssapi-service", "--socks5-hostname", "--speed-limit", "--speed-time", "--ssl-sessions",
+			"--stderr", "--telnet-option", "--tftp-blksize", "--time-cond", "--tls-max", "--tls13-ciphers",
+			"--tlsauthtype", "--tlspassword", "--tlsuser", "--trace", "--trace-ascii", "--trace-config",
+			"--unix-socket", "--upload-file", "--upload-flags", "--url", "--url-query", "--user", "--user-agent",
+			"--vlan-priority", "--write-out":
+			return word, len(word)
+		}
+	} else if len(word) > 1 && word[0] == '-' {
+		for i := 1; i < len(word); i++ {
+			if index := strings.IndexByte(curlShortValueOptions, word[i]); index >= 0 && index%2 == 1 {
+				return curlShortValueOptions[index-1 : index+1], i + 1
+			}
+			if strings.IndexByte(curlFlagOptions, word[i]) < 0 {
+				break
+			}
+		}
+	}
+	return "", 0
+}
 
 func curlOption(words []curlWord, index int) (option, value, prefix string, consumed int) {
 	word := words[index].value
-	if strings.HasPrefix(word, "--") {
-		if name, field, found := strings.Cut(word, "="); found {
-			return name, field, name + "=", 0
+	if option, offset := curlValueOption(word); option != "" {
+		if offset < len(word) || strings.HasSuffix(word, "=") {
+			return option, word[offset:], word[:offset], 0
 		}
-	} else if len(word) > 2 && word[0] == '-' && word[1] != '-' {
-		// Combined short flags such as -sSH take the next word for their
-		// final value option.
-		last := word[len(word)-1]
-		combined := strings.IndexByte(curlValueOptions, last) >= 0
-		for i := 1; combined && i < len(word)-1; i++ {
-			combined = strings.IndexByte(curlFlagOptions, word[i]) >= 0
-		}
-		if combined && index+1 < len(words) {
-			return "-" + string(last), words[index+1].value, "", 1
-		}
-		if strings.IndexByte("Hbdu", word[1]) >= 0 {
-			return word[:2], word[2:], word[:2], 0
-		}
-	}
-	switch word {
-	case "-H", "--header", "-b", "--cookie", "--url", "-d", "--data", "--data-raw", "--data-binary", "--json", "--data-urlencode",
-		"-u", "--user", "-U", "--proxy-user", "--oauth2-bearer", "-F", "--form", "--form-string":
 		if index+1 < len(words) {
-			return word, words[index+1].value, "", 1
+			return option, words[index+1].value, "", 1
 		}
 	}
 	return "", word, "", 0

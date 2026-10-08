@@ -273,62 +273,47 @@ func isJSONNumberText(text string) bool {
 	return first == '-' || first >= '0' && first <= '9'
 }
 
-// matches returns every protected original in text. Literals may overlap:
-// one that starts inside another is reported when it extends past it, and a
-// blocked literal is always reported, so the policy resolver sees every
-// protected byte and every block. Overlapping literals of the same rule are
-// merged into one span.
+// matches preserves every original span and policy. Only the policy resolver
+// may discard or combine overlapping matches.
 func (s *knownSnapshot) matches(text string) []detectors.Match {
 	if s == nil {
 		return nil
 	}
 	var out []detectors.Match
 	for _, part := range s.parts {
-		var spans, blocks []detectors.Match
+		// Advance by start, not end, so contained and crossing matches survive.
 		for pos := 0; ; {
 			start, _, _, ok := part.matcher.find(text, pos)
 			if !ok {
 				break
 			}
 			pos = start + 1
-			end, index := -1, -1
-			part.matcher.eachAt(text, start, func(e, i int) {
-				if Action(part.templates[i].Action) == ActionBlock {
-					blocks = part.addSpan(blocks, text, start, e, i)
-				}
-				end, index = e, i
+			part.matcher.eachAt(text, start, func(end, index int) {
+				match := part.templates[index]
+				match.Value, match.Start, match.End = text[start:end], start, end
+				out = append(out, match)
 			})
-			spans = part.addSpan(spans, text, start, end, index)
 		}
-		out = append(append(out, spans...), blocks...)
 	}
 	return out
 }
 
-// addSpan appends a literal unless the last span already covers it, and
-// extends the last span when both come from the same rule. Span ends
-// strictly increase, so the last span reaches furthest.
-func (m *knownMatcher) addSpan(spans []detectors.Match, text string, start, end, index int) []detectors.Match {
-	if n := len(spans); n > 0 && start < spans[n-1].End {
-		last := &spans[n-1]
-		if end <= last.End {
-			return spans
+// renew refreshes existing originals whose occurrences survived allow-rule
+// resolution, even when another match or a placeholder owns their output span.
+func (k *knownValues) renew(matches []detectors.Match) {
+	if len(matches) == 0 {
+		return
+	}
+	now := k.now()
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	for _, match := range matches {
+		original, ok := decodeKnownValue(match.Encoding, match.Value)
+		if !ok {
+			continue
 		}
-		if sameKnownTemplate(*last, m.templates[index]) {
-			last.End, last.Value = end, text[last.Start:end]
-			return spans
+		if value := k.values[original]; value != nil {
+			value.seen = now
 		}
 	}
-	return append(spans, m.match(text, start, end, index))
-}
-
-func (m *knownMatcher) match(text string, start, end, index int) detectors.Match {
-	match := m.templates[index]
-	match.Value, match.Start, match.End = text[start:end], start, end
-	return match
-}
-
-func sameKnownTemplate(a, b detectors.Match) bool {
-	return a.Category == b.Category && a.Rule == b.Rule && a.Action == b.Action &&
-		a.Generator == b.Generator && a.Priority == b.Priority && a.Encoding == b.Encoding
 }

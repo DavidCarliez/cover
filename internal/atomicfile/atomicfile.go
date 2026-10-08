@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Write replaces path with data. A symlinked path keeps its link and replaces
@@ -46,22 +47,69 @@ func Write(path string, data []byte, perm os.FileMode) error {
 	return os.Rename(name, path)
 }
 
-// resolveLinks follows symlinks at path, including a last link whose target
-// is missing, which filepath.EvalSymlinks cannot resolve.
+// resolveLinks follows existing path components before interpreting "..".
+// Missing suffixes are allowed so Write can create a dangling link's target.
 func resolveLinks(path string) (string, error) {
-	for range 40 {
-		info, err := os.Lstat(path)
-		if err != nil || info.Mode()&os.ModeSymlink == 0 {
-			return path, nil
-		}
-		target, err := os.Readlink(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved, nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	if !filepath.IsAbs(path) {
+		volume := filepath.VolumeName(path)
+		base, err := filepath.Abs(volume + ".")
 		if err != nil {
 			return "", err
 		}
-		if !filepath.IsAbs(target) {
-			target = filepath.Join(filepath.Dir(path), target)
+		path = path[len(volume):]
+		if len(path) > 0 && os.IsPathSeparator(path[0]) {
+			path = filepath.VolumeName(base) + path
+		} else {
+			path = base + string(filepath.Separator) + path
 		}
-		path = target
 	}
-	return "", errors.New("too many levels of symbolic links")
+	volume := filepath.VolumeName(path)
+	resolved := volume + string(filepath.Separator)
+	remaining := filepath.ToSlash(path[len(volume):])
+	links := 0
+	for remaining != "" {
+		part, rest, _ := strings.Cut(remaining, "/")
+		remaining = rest
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			resolved = filepath.Dir(resolved)
+			continue
+		}
+		next := filepath.Join(resolved, part)
+		info, err := os.Lstat(next)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return "", err
+			}
+			resolved = next
+			continue
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			resolved = next
+			continue
+		}
+		links++
+		if links > 40 {
+			return "", errors.New("too many levels of symbolic links")
+		}
+		target, err := os.Readlink(next)
+		if err != nil {
+			return "", err
+		}
+		if filepath.IsAbs(target) {
+			volume = filepath.VolumeName(target)
+			resolved = volume + string(filepath.Separator)
+			target = target[len(volume):]
+		}
+		// Do not Join here: the target may itself cross a symlink before "..".
+		remaining = filepath.ToSlash(target) + "/" + remaining
+	}
+	return resolved, nil
 }

@@ -139,14 +139,16 @@ func TestCurlCommandsProtectEveryCredentialForm(t *testing.T) {
 		"dynamic word":         {headerAliasRule("Authorization"), "curl -H \"Authorization: Bearer " + leakMarker + "\" \"$BASE/x\"", leakMarker},
 		// Commands the curl parser cannot rewrite keep their credentials
 		// protected through the plain-text net.
-		"piped basic auth":       {headerAliasRule("Authorization"), "curl -u admin:" + leakMarker + " https://x.example | jq .", leakMarker},
-		"piped oauth2 bearer":    {headerAliasRule("Authorization"), "curl --oauth2-bearer " + leakMarker + " https://x.example | jq .", leakMarker},
-		"piped attached user":    {headerAliasRule("Authorization"), "curl -uadmin:" + leakMarker + " https://x.example && echo ok", leakMarker},
-		"piped combined flags":   {headerAliasRule("Authorization"), "curl -sSu 'admin:" + leakMarker + "' https://x.example | jq .", leakMarker},
-		"piped long equals form": {headerAliasRule("Authorization"), "curl --user=\"admin:" + leakMarker + "\" https://x.example | jq .", leakMarker},
-		"piped proxy user":       {headerAliasRule("Authorization"), "curl -U proxy:" + leakMarker + " https://x.example | jq .", leakMarker},
-		"script continuation":    {headerAliasRule("Authorization"), "#!/bin/sh\nset -e\ncurl -s \\\n  -u admin:" + leakMarker + " \\\n  https://x.example | jq .\n", leakMarker},
-		"command in prose":       {headerAliasRule("Authorization"), "Run `curl -u admin:" + leakMarker + " https://x.example` to check.", leakMarker},
+		"piped basic auth":        {headerAliasRule("Authorization"), "curl -u admin:" + leakMarker + " https://x.example | jq .", leakMarker},
+		"piped oauth2 bearer":     {headerAliasRule("Authorization"), "curl --oauth2-bearer " + leakMarker + " https://x.example | jq .", leakMarker},
+		"piped attached user":     {headerAliasRule("Authorization"), "curl -uadmin:" + leakMarker + " https://x.example && echo ok", leakMarker},
+		"piped combined flags":    {headerAliasRule("Authorization"), "curl -sSu 'admin:" + leakMarker + "' https://x.example | jq .", leakMarker},
+		"attached combined flags": {headerAliasRule("Authorization"), "curl -sSuadmin:" + leakMarker + " https://x.example | jq .", leakMarker},
+		"attached proxy flags":    {headerAliasRule("Authorization"), "curl -sSUproxy:" + leakMarker + " https://x.example | jq .", leakMarker},
+		"piped long equals form":  {headerAliasRule("Authorization"), "curl --user=\"admin:" + leakMarker + "\" https://x.example | jq .", leakMarker},
+		"piped proxy user":        {headerAliasRule("Authorization"), "curl -U proxy:" + leakMarker + " https://x.example | jq .", leakMarker},
+		"script continuation":     {headerAliasRule("Authorization"), "#!/bin/sh\nset -e\ncurl -s \\\n  -u admin:" + leakMarker + " \\\n  https://x.example | jq .\n", leakMarker},
+		"command in prose":        {headerAliasRule("Authorization"), "Run `curl -u admin:" + leakMarker + " https://x.example` to check.", leakMarker},
 	} {
 		t.Run(name, func(t *testing.T) {
 			var rules []FieldRule
@@ -187,6 +189,44 @@ func TestCurlProseAndShellCompositionAreNotRejected(t *testing.T) {
 		}
 		if got := decodePolicyJSON(t, result.Body).(map[string]any)["input"]; got != text {
 			t.Errorf("changed %q to %q", text, got)
+		}
+	}
+}
+
+func TestCurlOptionArgumentsAreNotCredentials(t *testing.T) {
+	for _, option := range []string{"--output", "-o", "-so", "--cookie-jar", "--write-out", "--request", "--header"} {
+		for _, suffix := range []string{"", " | cat"} {
+			r := structuredPolicyRedactor(FieldRule{Name: "auth", Headers: []string{"Authorization"}, Action: "block"})
+			text := "curl " + option + " -unrelated https://x.example" + suffix
+			body, _ := json.Marshal(map[string]string{"input": text})
+			result := mustTransform(t, r, "s", body)
+			if result.Blocked {
+				t.Fatalf("%s argument was classified as authentication", option)
+			}
+			assertPolicyJSONEqual(t, result.Body, body)
+		}
+	}
+	r := structuredPolicyRedactor(FieldRule{Name: "auth", Headers: []string{"Authorization"}, Action: "block"})
+	body := []byte(`{"input":"curl -- https://x.example/-user -unrelated | cat"}`)
+	result := mustTransform(t, r, "s", body)
+	if result.Blocked {
+		t.Fatal("end-of-options marker was ignored")
+	}
+	assertPolicyJSONEqual(t, result.Body, body)
+}
+
+func TestCurlMixedCredentialsPreserveShellExpansions(t *testing.T) {
+	for _, expansion := range []string{"$API_TOKEN", "${API_TOKEN}", "${API_TOKEN:-default}", "$(printf token)"} {
+		for _, suffix := range []string{"", " | cat"} {
+			r := structuredPolicyRedactor(headerAliasRule("Authorization"))
+			text := `curl --user "` + leakMarker + `:` + expansion + `" https://x.example` + suffix
+			out := assertContentProtected(t, r, text)
+			if !strings.Contains(out, ":"+expansion) {
+				t.Fatalf("expansion changed: %q", out)
+			}
+			if restored := string(r.RestoreForSession([]byte(out), "s")); restored != text {
+				t.Fatalf("restored %q, want %q", restored, text)
+			}
 		}
 	}
 }

@@ -532,14 +532,19 @@ func TestHeaderlessSSEShortFirstEventIsNotHeldBack(t *testing.T) {
 		case <-req.Context().Done():
 		}
 	}))
-	defer upstream.Close()
-	defer close(release)
+	var front *httptest.Server
+	defer func() {
+		close(release)
+		if front != nil {
+			front.Close()
+		}
+		upstream.Close()
+	}()
 	p, err := New(upstream.URL, newTestRedactor(t), nil, Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	front := httptest.NewServer(p)
-	defer front.Close()
+	front = httptest.NewServer(p)
 
 	type reply struct {
 		contentType, first string

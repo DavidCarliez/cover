@@ -324,6 +324,59 @@ func TestKnownValueInsideWordRestoresExactly(t *testing.T) {
 	}
 }
 
+func TestKnownMatchPrioritySurvivesContainment(t *testing.T) {
+	known := newKnownValues(10, time.Hour, time.Now)
+	const outer, inner = "prefix-central-value-suffix", "central-value"
+	known.remember(outer, detectors.Match{Rule: "outer", Action: "block", Priority: 10})
+	known.remember(inner, detectors.Match{Rule: "inner", Action: "block", Priority: 30})
+	matches := known.current().matches(outer)
+	matches = append(matches, detectors.Match{Rule: "exception", Action: "allow", Priority: 20, Value: outer, End: len(outer)})
+	selected, _ := selectNonOverlapping(outer, matches)
+	if len(selected) != 1 || selected[0].Rule != "inner" || selected[0].Action != "block" {
+		t.Fatalf("contained policy priority changed: %+v", selected)
+	}
+}
+
+func TestOverlappingKnownValuesRenewConstituents(t *testing.T) {
+	now := time.Unix(0, 0)
+	store := NewStoreWithOptions(StoreOptions{KnownValueTTL: time.Hour, Now: func() time.Time { return now }})
+	r := New(store, 0, RedactorOptions{FieldRules: []FieldRule{aliasKeyRule("selected", "selected")}})
+	mustTransform(t, r, "s", []byte(`{"selected":["alpha-shared","shared-omega"]}`))
+	for range 3 {
+		now = now.Add(30 * time.Minute)
+		mustTransform(t, r, "s", []byte(`{"text":"alpha-shared-omega"}`))
+	}
+	now = now.Add(15 * time.Minute)
+	body := []byte(`{"text":"alpha-shared shared-omega"}`)
+	result := mustTransform(t, r, "s", body)
+	if strings.Contains(string(result.Body), "alpha-shared") || strings.Contains(string(result.Body), "shared-omega") {
+		t.Fatalf("active constituents expired: %s", result.Body)
+	}
+	assertPolicyJSONEqual(t, r.RestoreResponseForSession(result.Body, "application/json", "s"), body)
+	now = now.Add(2 * time.Hour)
+	assertPolicyJSONEqual(t, mustTransform(t, r, "s", body).Body, body)
+}
+
+func TestOverlappingKnownNumbersUseUntypedUnion(t *testing.T) {
+	for _, split := range []bool{false, true} {
+		r := structuredPolicyRedactor(FieldRule{
+			Name: "selected", Keys: []string{"selected"}, Action: "pseudonymize", Generator: "number",
+		})
+		if split {
+			mustTransform(t, r, "s", []byte(`{"selected":1234.5678}`))
+			mustTransform(t, r, "s", []byte(`{"selected":5678.9012}`))
+		} else {
+			mustTransform(t, r, "s", []byte(`{"selected":[1234.5678,5678.9012]}`))
+		}
+		body := []byte(`{"text":"revision 1234.5678.9012"}`)
+		result := mustTransform(t, r, "s", body)
+		if strings.Contains(string(result.Body), "1234.5678.9012") {
+			t.Fatalf("split=%v: numeric union was not protected: %s", split, result.Body)
+		}
+		assertPolicyJSONEqual(t, r.RestoreResponseForSession(result.Body, "application/json", "s"), body)
+	}
+}
+
 func must[T any](value T, err error) T {
 	if err != nil {
 		panic(err)

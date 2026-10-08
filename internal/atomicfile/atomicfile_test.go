@@ -71,3 +71,44 @@ func TestWriteCreatesWithPermission(t *testing.T) {
 		t.Fatalf("mode=%v err=%v", info.Mode().Perm(), err)
 	}
 }
+
+func TestWriteResolvesParentLinksBeforeRelativeTargets(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		t.Run(map[bool]string{false: "missing", true: "existing"}[existing], func(t *testing.T) {
+			root := t.TempDir()
+			shell := filepath.Join(root, "dotfiles", "shell")
+			shared := filepath.Join(root, "dotfiles", "shared")
+			for _, dir := range []string{shell, shared} {
+				if err := os.MkdirAll(dir, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			}
+			target := filepath.Join(shared, "profile")
+			if existing {
+				if err := os.WriteFile(target, []byte("old"), 0o640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			parent := filepath.Join(root, "profiles")
+			if err := os.Symlink(shell, parent); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+			link := filepath.Join(shell, "profile")
+			if err := os.Symlink(filepath.Join("..", "shared", "profile"), link); err != nil {
+				t.Fatal(err)
+			}
+			if err := Write(filepath.Join(parent, "profile"), []byte("updated"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if data, err := os.ReadFile(target); err != nil || string(data) != "updated" {
+				t.Fatalf("intended target=%q err=%v", data, err)
+			}
+			if _, err := os.Lstat(filepath.Join(root, "shared")); !os.IsNotExist(err) {
+				t.Fatalf("unexpected sibling path: %v", err)
+			}
+			if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("link was replaced: %v", err)
+			}
+		})
+	}
+}

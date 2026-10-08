@@ -198,46 +198,127 @@ func curlCredentialValues(text string) [][2]int {
 		words := lenientShellWords(text, from)
 		for i := 0; i < len(words); i++ {
 			word := text[words[i][0]:words[i][1]]
-			value := [2]int{-1, -1}
-			switch {
-			case word == "-u" || word == "--user" || word == "-U" || word == "--proxy-user" || word == "--oauth2-bearer":
-				if i+1 < len(words) {
-					i++
-					value = words[i]
-				}
-			case strings.HasPrefix(word, "--user=") || strings.HasPrefix(word, "--proxy-user=") || strings.HasPrefix(word, "--oauth2-bearer="):
-				value = [2]int{words[i][0] + strings.IndexByte(word, '=') + 1, words[i][1]}
-			case len(word) > 2 && word[0] == '-' && word[1] != '-':
-				// -uuser:pass, or flags ending in u such as -sSu user:pass.
-				if word[1] == 'u' || word[1] == 'U' {
-					value = [2]int{words[i][0] + 2, words[i][1]}
-					break
-				}
-				last := word[len(word)-1]
-				flags := last == 'u' || last == 'U'
-				for j := 1; flags && j < len(word)-1; j++ {
-					flags = strings.IndexByte(curlFlagOptions, word[j]) >= 0
-				}
-				if flags && i+1 < len(words) {
-					i++
-					value = words[i]
-				}
+			if word == "--" {
+				break
 			}
-			if value[0] < 0 || value[1] <= value[0] {
+			option, offset := curlValueOption(word)
+			if option == "" {
 				continue
 			}
-			// Protect the inside of a fully quoted word.
-			if raw := text[value[0]:value[1]]; len(raw) >= 2 && (raw[0] == '\'' || raw[0] == '"') && raw[len(raw)-1] == raw[0] {
-				value[0], value[1] = value[0]+1, value[1]-1
+			value := [2]int{words[i][0] + offset, words[i][1]}
+			if offset == len(word) && !strings.HasSuffix(word, "=") {
+				if i+1 == len(words) {
+					break
+				}
+				i++
+				value = words[i]
 			}
-			if value[1] > value[0] && text[value[0]] != '$' {
-				spans = append(spans, value)
+			switch option {
+			case "-u", "-U", "--user", "--proxy-user", "--oauth2-bearer":
+				spans = append(spans, shellLiteralSpans(text, value[0], value[1])...)
 			}
 		}
 		if len(words) > 0 {
 			from = max(from, words[len(words)-1][1])
 		}
 	}
+}
+
+// shellLiteralSpans leaves quotes, expansions and auth separators in place.
+// It never evaluates shell syntax; selected literal pieces are rewritten alone.
+func shellLiteralSpans(text string, start, end int) [][2]int {
+	var spans [][2]int
+	literal, quote := start, byte(0)
+	flush := func(until int) {
+		for literal < until && text[literal] == ':' {
+			literal++
+		}
+		for until > literal && text[until-1] == ':' {
+			until--
+		}
+		if literal < until {
+			spans = append(spans, [2]int{literal, until})
+		}
+	}
+	for i := start; i < end; i++ {
+		c := text[i]
+		if c == '\\' && quote != '\'' && i+1 < end {
+			i++
+			continue
+		}
+		if (c == '\'' || c == '"') && (quote == 0 || quote == c) {
+			flush(i)
+			if quote == 0 {
+				quote = c
+			} else {
+				quote = 0
+			}
+			literal = i + 1
+			continue
+		}
+		if quote != '\'' {
+			if next := shellExpansionEnd(text, i, end); next > i {
+				flush(i)
+				i, literal = next-1, next
+			}
+		}
+	}
+	flush(end)
+	return spans
+}
+
+func shellExpansionEnd(text string, start, end int) int {
+	if text[start] == '`' {
+		for i := start + 1; i < end; i++ {
+			if text[i] == '\\' {
+				i++
+			} else if text[i] == '`' {
+				return i + 1
+			}
+		}
+		return end
+	}
+	if text[start] != '$' || start+1 == end {
+		return start
+	}
+	i := start + 1
+	if text[i] == '{' || text[i] == '(' {
+		open, close := text[i], byte('}')
+		if open == '(' {
+			close = ')'
+		}
+		depth, quote := 1, byte(0)
+		for i++; i < end; i++ {
+			c := text[i]
+			if c == '\\' && quote != '\'' {
+				i++
+			} else if quote != 0 {
+				if c == quote {
+					quote = 0
+				}
+			} else if c == '\'' || c == '"' || c == '`' {
+				quote = c
+			} else if c == open {
+				depth++
+			} else if c == close {
+				depth--
+				if depth == 0 {
+					return i + 1
+				}
+			}
+		}
+		return end
+	}
+	if strings.IndexByte("0123456789@*#?$!-", text[i]) >= 0 {
+		return i + 1
+	}
+	for i < end && (text[i] == '_' || text[i] >= 'a' && text[i] <= 'z' || text[i] >= 'A' && text[i] <= 'Z' || i > start+1 && text[i] >= '0' && text[i] <= '9') {
+		i++
+	}
+	if i == start+1 {
+		return start
+	}
+	return i
 }
 
 func isCurlWordByte(c byte) bool {
@@ -252,6 +333,15 @@ func lenientShellWords(text string, from int) [][2]int {
 	start, quote := -1, byte(0)
 	for i := from; i < len(text); i++ {
 		c := text[i]
+		if c == '$' && quote != '\'' {
+			if next := shellExpansionEnd(text, i, len(text)); next > i {
+				if start < 0 {
+					start = i
+				}
+				i = next - 1
+				continue
+			}
+		}
 		switch {
 		case quote != 0:
 			if c == '\\' && quote == '"' && i+1 < len(text) {

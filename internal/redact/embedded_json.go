@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -489,8 +488,8 @@ func (r *Redactor) selectedJSONFieldNeedsParser(text string) bool {
 		if j >= len(text) || text[j] != ':' {
 			continue
 		}
-		name, err := strconv.Unquote(text[start : i+1])
-		if err != nil {
+		var name string
+		if err := json.Unmarshal([]byte(text[start:i+1]), &name); err != nil {
 			continue
 		}
 		if _, matched := r.fieldRule(selectorKeys, name); !matched {
