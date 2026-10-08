@@ -68,13 +68,24 @@ var builtinPatterns = map[string]string{
 	"anthropic_key":              `sk-ant-[A-Za-z0-9_-]{20,}`,
 	"private_key_block":          `-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----`,
 	"jwt":                        `eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+`,
-	"generic_api_key_assignment": `(?i)(api[_-]?key(?:_\w+)*|secret|token|password|passwd|pwd)[ \t]*[=:][ \t]*['"]?[A-Za-z0-9_\-/+=]{8,}['"]?`,
+	"openai_key":                 `sk-(?:proj|svcacct|admin)-[A-Za-z0-9_-]{20,}|sk-[A-Za-z0-9]{48}\b`,
+	"huggingface_token":          `hf_[A-Za-z0-9]{30,}`,
+	"digitalocean_token":         `do[po]_v1_[0-9a-f]{64}`,
+	"vault_token":                `hv[sb]\.[A-Za-z0-9_-]{24,}`,
+	"sendgrid_key":               `SG\.[A-Za-z0-9_-]{16,32}\.[A-Za-z0-9_-]{16,64}`,
+	"npm_token":                  `npm_[A-Za-z0-9]{36}`,
+	"pypi_token":                 `pypi-AgEIcHlwaS5vcmc[A-Za-z0-9_-]{50,}`,
+	"google_oauth_secret":        `GOCSPX-[A-Za-z0-9_-]{20,}`,
+	"shopify_token":              `shp(?:at|ca|pa|ss)_[0-9a-fA-F]{32}`,
+	"azure_storage_key":          `(?:AccountKey|SharedAccessKey)=[A-Za-z0-9+/]{40,}={0,2}`,
+	"pem_base64":                 `LS0tLS1CRUdJTi[A-Za-z0-9+/]{40,}={0,2}`,
+	"generic_api_key_assignment": `(?i)(api[_-]?key|secret|token|password|passwd|pwd)(?:[_-]\w+)*[ \t]*[=:][ \t]*['"]?[A-Za-z0-9_\-/+=](?:[A-Za-z0-9_\-/+=.]*[A-Za-z0-9_\-/+=]){7,}['"]?`,
 	"email":                      `[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}`,
 	"ssn":                        `\b\d{3}[- \t]\d{2}[- \t]\d{4}\b`,
 	"credit_card":                `\b(?:4[0-9]{3}[- \t]?[0-9]{4}[- \t]?[0-9]{4}[- \t]?[0-9]{4}|5[1-5][0-9]{2}[- \t]?[0-9]{4}[- \t]?[0-9]{4}[- \t]?[0-9]{4}|3[47][0-9]{2}[- \t]?[0-9]{6}[- \t]?[0-9]{5}|6(?:011|5[0-9]{2})[- \t]?[0-9]{4}[- \t]?[0-9]{4}[- \t]?[0-9]{4})\b`,
 	"phone_us":                   `(?:\+?1[-. \t]?)?(?:\([2-9]\d{2}\)[-. \t]*|\b[2-9]\d{2}[-. \t]+)\d{3}[-. \t]+\d{4}\b`,
-	"phone_intl":                 `\+[1-9]\d{6,14}\b`,
-	"iban":                       `\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b`,
+	"phone_intl":                 `\+[1-9](?:\d{6,14}|\d{0,2}(?:[ -]?\(0\)[ -]?|[ -])\d(?:[ .-]?\d){5,12})\b`,
+	"iban":                       `\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){2,7}(?: ?[A-Z0-9]{1,4})?\b`,
 	"ipv4":                       `\b(?:\d{1,3}\.){3}\d{1,3}\b`,
 	"ipv6":                       `\b[0-9A-Fa-f:]{2,39}\b`,
 	"hostname":                   `\b[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\b`,
@@ -124,6 +135,17 @@ var builtinTriggers = map[string][]string{
 	"anthropic_key":              {"sk-ant-"},
 	"private_key_block":          {"-----BEGIN"},
 	"jwt":                        {"eyJ"},
+	"openai_key":                 {"sk-"},
+	"huggingface_token":          {"hf_"},
+	"digitalocean_token":         {"_v1_"},
+	"vault_token":                {"hvs.", "hvb."},
+	"sendgrid_key":               {"SG."},
+	"npm_token":                  {"npm_"},
+	"pypi_token":                 {"pypi-"},
+	"google_oauth_secret":        {"GOCSPX-"},
+	"shopify_token":              {"shp"},
+	"azure_storage_key":          {"AccountKey=", "SharedAccessKey="},
+	"pem_base64":                 {"LS0tLS1CRUdJTi"},
 	"generic_api_key_assignment": {"api", "key", "secret", "token", "password", "passwd", "pwd"},
 	"email":                      {"@"},
 	"ssn":                        {},
@@ -234,6 +256,7 @@ func candidateSpans(text string, filter func(string) bool) [][2]int {
 var postValidators = map[string]func(string) bool{
 	"credit_card": luhnValid,
 	"ssn":         ssnValid,
+	"iban":        ibanValid,
 	"ipv4":        func(s string) bool { return net.ParseIP(s) != nil && !strings.Contains(s, ":") },
 	"ipv6":        func(s string) bool { return net.ParseIP(s) != nil && strings.Contains(s, ":") },
 }
@@ -453,6 +476,34 @@ func luhnValid(s string) bool {
 		alt = !alt
 	}
 	return sum%10 == 0
+}
+
+// ibanValid reports whether s is an IBAN whose ISO 13616 check digits are
+// correct: with the first four characters moved to the end and letters read
+// as 10 to 35, the number is 1 modulo 97.
+func ibanValid(s string) bool {
+	var compact []byte
+	for i := 0; i < len(s); i++ {
+		if c := s[i]; c != ' ' {
+			compact = append(compact, c)
+		}
+	}
+	if len(compact) < 15 || len(compact) > 34 {
+		return false
+	}
+	rearranged := append(compact[4:], compact[:4]...)
+	rem := 0
+	for _, c := range rearranged {
+		switch {
+		case c >= '0' && c <= '9':
+			rem = (rem*10 + int(c-'0')) % 97
+		case c >= 'A' && c <= 'Z':
+			rem = (rem*100 + int(c-'A') + 10) % 97
+		default:
+			return false
+		}
+	}
+	return rem == 1
 }
 
 // ssnValid rejects obviously invalid US Social Security numbers.

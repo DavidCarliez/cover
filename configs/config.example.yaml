@@ -140,6 +140,17 @@ detectors:
       - slack_token
       - stripe_key
       - anthropic_key
+      - openai_key
+      - huggingface_token
+      - digitalocean_token
+      - vault_token
+      - sendgrid_key
+      - npm_token
+      - pypi_token
+      - google_oauth_secret
+      - shopify_token
+      - azure_storage_key
+      - pem_base64
       - private_key_block
       - jwt
       - generic_api_key_assignment

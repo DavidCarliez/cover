@@ -2,6 +2,7 @@ package detectors
 
 import (
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -56,9 +57,60 @@ func TestRegexDetector_Builtin(t *testing.T) {
 	}
 }
 
-func TestOpenAIKeyIsNotABuiltinCategory(t *testing.T) {
-	if _, err := NewRegexDetector([]string{"openai_key"}, nil); err == nil {
-		t.Fatal("openai_key must not be available as a built-in detector")
+func TestOpenAIKeyDoesNotClaimOtherVendorsKeys(t *testing.T) {
+	d, err := NewRegexDetector([]string{"openai_key", "anthropic_key", "stripe_key"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for text, want := range map[string]string{
+		"sk-" + "proj-Ab3dE6fG9hJ2kL5mN8pQ1rS4tU7vW0xY3zA6bC9dE2f":      "openai_key",
+		"sk-" + "svcacct-Ab3dE6fG9hJ2kL5mN8pQ1rS4tU7vW0xY3zA6":          "openai_key",
+		"sk-" + "Ab3dE6fG9hJ2kL5mN8pQ1rS4tU7vW0xY3zA6bC9dE2fG5hJ8":      "openai_key",
+		"sk-" + "ant-api03-Ab3dE6fG9hJ2kL5mN8pQ1rS4tU7vW0xY3zA6bC9dE2f": "anthropic_key",
+		"sk_" + "live_4eC39HqLyjWDarjtT1zdp7dc":                         "stripe_key",
+	} {
+		matches := d.Detect("key " + text + " end")
+		if len(matches) != 1 || matches[0].Category != want || matches[0].Value != text {
+			t.Fatalf("%q: matches=%+v, want one %s", text, matches, want)
+		}
+	}
+}
+
+func TestBuiltinPatternsSkipLookalikes(t *testing.T) {
+	d, err := NewRegexDetector([]string{"generic_api_key_assignment", "iban", "phone_intl"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{
+		"token_type: Bearer",
+		"password_hash: $2b$12$abcdefghijklmnopqrstuv",
+		"secret: ${SECRET_VALUE}",
+		"iban AB12 CDEF GHIJ KLMN",
+		"iban DE89 3704 0044 0532 0130 01",
+		"delta +3.14159265 and +12.3456789",
+		"range +1-10 or +2024-10-08",
+	} {
+		if matches := d.Detect(text); len(matches) != 0 {
+			t.Errorf("%q: unexpected matches %+v", text, matches)
+		}
+	}
+	for text, want := range map[string]string{
+		`secret_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzQ9KmLp2Vt"`:  `secret_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYzQ9KmLp2Vt"`,
+		"SENDGRID_API_KEY=SG.Ab3dE6fG9hJ2kL5mN8pQ1w.Ab3dE6fG9hJ2k": "API_KEY=SG.Ab3dE6fG9hJ2kL5mN8pQ1w.Ab3dE6fG9hJ2k",
+		"password: hunter2abc. Next sentence":                      "password: hunter2abc",
+		"pay DE89 3704 0044 0532 0130 00 now":                      "DE89 3704 0044 0532 0130 00",
+		"pay BE68 5390 0754 7034 now":                              "BE68 5390 0754 7034",
+		"call +32 471 23 45 67 now":                                "+32 471 23 45 67",
+		"call +32 (0)2 123 45 67 now":                              "+32 (0)2 123 45 67",
+		"call +44 20 7946 0958 now":                                "+44 20 7946 0958",
+		"call +1 212 555 0123 now":                                 "+1 212 555 0123",
+		"call +32-471-23-45-67 now":                                "+32-471-23-45-67",
+		"call +442071838750 now":                                   "+442071838750",
+	} {
+		matches := d.Detect(text)
+		if len(matches) != 1 || matches[0].Value != want {
+			t.Errorf("%q: matches=%+v, want %q", text, matches, want)
+		}
 	}
 }
 
@@ -131,8 +183,19 @@ func TestBuiltinTriggersNeverSkipRealMatches(t *testing.T) {
 		"ssn":                        {"ssn 123-45-6789", "ssn 123 45 6789"},
 		"credit_card":                {"card 4111 1111 1111 1111", "card 4111111111111111"},
 		"phone_us":                   {"call 212-555-0123 now", "call 212.555.0123", "call (212) 555-0123", "call +1 212 555 0123"},
-		"phone_intl":                 {"call +442071838750"},
-		"iban":                       {"iban DE89370400440532013000"},
+		"phone_intl":                 {"call +442071838750", "call +32 471 23 45 67", "call +32 (0)2 123 45 67"},
+		"iban":                       {"iban DE89370400440532013000", "iban DE89 3704 0044 0532 0130 00"},
+		"openai_key":                 {"sk-" + "proj-Ab3dE6fG9hJ2kL5mN8pQ1rS4tU7vW0xY3zA6bC9dE2f", "sk-" + "Ab3dE6fG9hJ2kL5mN8pQ1rS4tU7vW0xY3zA6bC9dE2fG5hJ8"},
+		"huggingface_token":          {"hf_" + "Ab3dE6fG9hJ2kL5mN8pQ1rS4tU7vW0xY3zA6b"},
+		"digitalocean_token":         {"dop_" + "v1_" + strings.Repeat("a1b2c3d4", 8)},
+		"vault_token":                {"hvs." + "CAESIJx7K2pL9vN4rT8wY1zB3cF6hJ0dA5gE8uI2oS4kM7nP1q"},
+		"sendgrid_key":               {"SG." + "Ab3dE6fG9hJ2kL5mN8pQ1w.Ab3dE6fG9hJ2kL5mN8pQ1rS4tU7vW0xY3zA6bC9dE2fG5hJ8k"},
+		"npm_token":                  {"npm_" + "Ab3dE6fG9hJ2kL5mN8pQ1rS4tU7vW0xY3zA6"},
+		"pypi_token":                 {"pypi-" + "AgEIcHlwaS5vcmc" + strings.Repeat("Ab3dE6fG9hJ2", 5)},
+		"google_oauth_secret":        {"GOCSPX-" + "Ab3dE6fG9hJ2kL5mN8pQ1rS4tU7v"},
+		"shopify_token":              {"shpat_" + "f3a9c1e7b2d4a6f8c0e2b4d6a8f0c2e4"},
+		"azure_storage_key":          {"AccountKey=" + strings.Repeat("Qx7mK2pL9vN4rT8w", 5) + "Qx7mK2==", "SharedAccessKey=" + strings.Repeat("Qx7mK2pL9vN4rT8w", 3)},
+		"pem_base64":                 {"LS0tLS1CRUdJTi" + "BSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFb3dJQkFBS0NBUUVBdTd2WThRMnhL"},
 		"ipv4":                       {"host 10.20.30.40"},
 		"ipv6":                       {"host 2001:db8::1"},
 		"domain":                     {"see db.corp.example.com"},
