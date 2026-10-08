@@ -623,7 +623,20 @@ func transformHTTPMessage(text string, start httpStartLine, policy httpContentPo
 		}
 		bodyEnd = bodyStart + contentLength
 	} else if start.request {
+		// A request without framing has no body, unless text that is not a
+		// label or fence follows it: a pasted request then carries its body
+		// up to the next message or the end of the text.
 		bodyEnd = bodyStart
+		if !transferEncoded && bodyStart < len(text) {
+			next, found := findHTTPMessageStart(text, bodyStart)
+			gapEnd := len(text)
+			if found {
+				gapEnd = next.line.start
+			}
+			if !safeHTTPChainGap(text[bodyStart:gapEnd]) {
+				bodyEnd = gapEnd
+			}
+		}
 	} else if responseHasNoBody(start.status) {
 		expectsChain = start.status >= 100 && start.status < 200 && start.status != 101
 		bodyEnd = bodyStart
@@ -657,17 +670,6 @@ func transformHTTPMessage(text string, start httpStartLine, policy httpContentPo
 	if mediaErr != nil && bodyEnd > bodyStart && policy.hasBodyWork() {
 		return "", 0, false, unsafeHTTPContentError()
 	}
-	if start.request && !hasContentLength && !transferEncoded && bodyStart < len(text) {
-		next, found := findHTTPMessageStart(text, bodyStart)
-		gapEnd := len(text)
-		if found {
-			gapEnd = next.line.start
-		}
-		if !safeHTTPChainGap(text[bodyStart:gapEnd]) {
-			return "", 0, false, unsafeHTTPContentError()
-		}
-	}
-
 	body := text[bodyStart:bodyEnd]
 	if body != "" && hasUnsupportedContentEncoding(headers) && bodyNeedsProtection(mediaType, body, policy) {
 		return "", 0, false, unsafeHTTPContentError()

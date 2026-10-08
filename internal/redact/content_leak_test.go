@@ -51,6 +51,18 @@ func TestHTTPSurroundingTextReceivesStructuredPolicies(t *testing.T) {
 		"form after zero Content-Length": {formAliasRule("password"), "POST /login HTTP/1.1\nContent-Type: application/x-www-form-urlencoded\nContent-Length: 0\n\npassword=" + leakMarker},
 		"JSON after short Content-Length": {keyAliasRule("password"),
 			"POST /x HTTP/1.1\nContent-Type: application/json\nContent-Length: 2\n\n{}\n{\"password\":\"" + leakMarker + "\"}"},
+		// A pasted request without Content-Length carries its body up to the
+		// next message or the end of the text.
+		"JSON body without Content-Length": {keyAliasRule("password"),
+			"POST /x HTTP/1.1\nHost: x\nContent-Type: application/json\n\n{\"password\":\"" + leakMarker + "\"}"},
+		"form body without Content-Length": {formAliasRule("password"),
+			"POST /login HTTP/1.1\nHost: x\nContent-Type: application/x-www-form-urlencoded\n\npassword=" + leakMarker},
+		"header rule with unframed body": {headerAliasRule("Authorization"),
+			"POST /x HTTP/1.1\nAuthorization: Bearer " + leakMarker + "\nContent-Type: application/json\n\n{\"amount\": 100}"},
+		"request and response without Content-Length": {keyAliasRule("password"),
+			"POST /x HTTP/1.1\nContent-Type: application/json\n\n{\"password\":\"" + leakMarker + "\"}\nHTTP/1.1 200 OK\nContent-Type: application/json\n\n{\"password\":\"" + leakMarker + "\"}"},
+		"prose after a GET": {keyAliasRule("password"),
+			"GET / HTTP/1.1\nHost: x\n\nIt failed with password=" + leakMarker + " in the logs."},
 	} {
 		t.Run(name, func(t *testing.T) {
 			assertContentProtected(t, structuredPolicyRedactor(tc.rule), tc.text)
