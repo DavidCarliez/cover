@@ -76,6 +76,47 @@ func TestOpenAIKeyDoesNotClaimOtherVendorsKeys(t *testing.T) {
 	}
 }
 
+func TestCLIAndFilePasswordDetectorsSelectOnlyTheValue(t *testing.T) {
+	d, err := NewRegexDetector([]string{"cli_password_flag", "pgpass_line", "netrc_password"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for text, want := range map[string]string{
+		"mysql -h db -P 3306 -u root -pS3cretPass -e 'show databases'": "S3cretPass",
+		"mysqldump -u root -p'S3cret Pass' app > dump.sql":             "S3cret",
+		"docker login registry -u deploy --password hunter2abc":        "hunter2abc",
+		"huggingface-cli login --token hf_abcdefghij":                  "hf_abcdefghij",
+		"sshpass -p s3cretpw ssh deploy@host":                          "s3cretpw",
+		"redis-cli -h cache -a s3cretpw ping":                          "s3cretpw",
+		"sqlcmd -S db -U sa -P p4ssw0rd -Q 'select 1'":                 "p4ssw0rd",
+		"mongosh --username app --password p4ssw0rd":                   "p4ssw0rd",
+		"db.internal:5432:app:app:Xk9pLm2qRtVw7Zs":                     "Xk9pLm2qRtVw7Zs",
+		"machine api.github.com login alice password ghp_abcdefgh":     "ghp_abcdefgh",
+		"  password s3cretpw":                                          "s3cretpw",
+		"default login anonymous password me@example.com":              "me@example.com",
+	} {
+		matches := d.Detect(text)
+		if len(matches) != 1 || matches[0].Value != want || text[matches[0].Start:matches[0].End] != want {
+			t.Errorf("%q: matches=%+v, want value %q", text, matches, want)
+		}
+	}
+	for _, text := range []string{
+		"mysql -u root -p mydb",
+		"mysql -h db -P 3306 -u root",
+		"mkdir -p build && ssh -p 2222 host",
+		"docker login --password-stdin registry",
+		"docker login --password $REGISTRY_PASSWORD",
+		"tool --token --help",
+		"meeting at 12:30",
+		"password manager tips",
+		"The password reset flow",
+	} {
+		if matches := d.Detect(text); len(matches) != 0 {
+			t.Errorf("%q: unexpected matches %+v", text, matches)
+		}
+	}
+}
+
 func TestBuiltinPatternsSkipLookalikes(t *testing.T) {
 	d, err := NewRegexDetector([]string{"generic_api_key_assignment", "iban", "phone_intl"}, nil)
 	if err != nil {
@@ -196,6 +237,9 @@ func TestBuiltinTriggersNeverSkipRealMatches(t *testing.T) {
 		"shopify_token":              {"shpat_" + "f3a9c1e7b2d4a6f8c0e2b4d6a8f0c2e4"},
 		"azure_storage_key":          {"AccountKey=" + strings.Repeat("Qx7mK2pL9vN4rT8w", 5) + "Qx7mK2==", "SharedAccessKey=" + strings.Repeat("Qx7mK2pL9vN4rT8w", 3)},
 		"pem_base64":                 {"LS0tLS1CRUdJTi" + "BSU0EgUFJJVkFURSBLRVktLS0tLQpNSUlFb3dJQkFBS0NBUUVBdTd2WThRMnhL"},
+		"cli_password_flag":          {"mysql -u root -pS3cretPass", "docker login --password hunter2abc", "sshpass -p s3cret ssh host", "redis-cli -a s3cret ping", "sqlcmd -S s -U u -P p4ssw0rd", "mongosh --password p4ssw0rd", "cli --api-key abcdef123"},
+		"pgpass_line":                {"db.internal:5432:app:app:Xk9pLm2qRtVw7Zs", "x\nlocalhost:*:*:postgres:secretpw\ny"},
+		"netrc_password":             {"machine api.example login alice password s3cret", "machine x\n  login y\n  password s3cret\n"},
 		"ipv4":                       {"host 10.20.30.40"},
 		"ipv6":                       {"host 2001:db8::1"},
 		"domain":                     {"see db.corp.example.com"},

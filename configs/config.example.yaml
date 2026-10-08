@@ -151,6 +151,9 @@ detectors:
       - shopify_token
       - azure_storage_key
       - pem_base64
+      - cli_password_flag
+      - pgpass_line
+      - netrc_password
       - private_key_block
       - jwt
       - generic_api_key_assignment
