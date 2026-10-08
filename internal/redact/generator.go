@@ -27,7 +27,7 @@ var validGenerators = map[string]bool{
 	"ipv4": true, "ipv6": true, "hostname": true, "domain": true,
 	"fqdn": true, "email": true, "username": true, "password": true,
 	"secret": true, "uuid": true, "url": true, "alias": true,
-	"number": true,
+	"number": true, "iban": true, "phone": true,
 }
 
 func ValidateAction(action, generator string) error {
@@ -134,6 +134,10 @@ func generateReplacement(key []byte, generator, original string, attempt int) (s
 		return pseudonymizeURLParts(key, u), nil
 	case "alias":
 		return "alias-" + strconv.FormatUint(uint64(h[0])<<24|uint64(h[1])<<16|uint64(h[2])<<8|uint64(h[3]), 36), nil
+	case "iban":
+		return generateIBANReplacement(original, h)
+	case "phone":
+		return generatePhoneReplacement(original, h)
 	default:
 		return "", fmt.Errorf("unknown pseudonym generator")
 	}

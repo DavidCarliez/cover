@@ -91,7 +91,7 @@ GOOS=windows GOARCH=amd64 go build -o cover.exe ./cmd/cover
 | Area | Cover functionality |
 | --- | --- |
 | Policy | Declarative rules with `allow`, `placeholder`, `pseudonymize`, `mask`, `redact`, and `block` actions |
-| Realistic replacements | Deterministic generators for IP addresses, hosts, domains, emails, usernames, passwords, UUIDs, URLs, aliases, and numeric identifiers |
+| Realistic replacements | Deterministic generators for IP addresses, hosts, domains, emails, usernames, passwords, UUIDs, URLs, aliases, numeric identifiers, IBANs, and phone numbers |
 | Context-aware rules | JSON keys inside tool-result strings, HTTP headers, cookies, query parameters and form fields, plus regex and built-in detectors |
 | Stable identities | Installation-keyed HMAC pseudonyms remain consistent across requests, sessions, and restarts |
 | Mapping safety | Bounded, session-isolated, memory-only reversible mappings with TTL and capacity limits |
@@ -256,11 +256,16 @@ do not outrank it, so allowing `corp.example.com` does not expose
 `alice@corp.example.com`.
 
 Pseudonym generators: `ipv4`, `ipv6`, `hostname`, `domain`, `fqdn`, `email`,
-`username`, `password`, `secret`, `uuid`, `url`, `alias`, and `number`.
+`username`, `password`, `secret`, `uuid`, `url`, `alias`, `number`, `iban`,
+and `phone`.
 The `url` generator replaces the host, credentials, every path segment, query
 values and the fragment; only the scheme, port, segment count and query keys
 remain. Host, domain and email fakes use `example.com`, or a private suffix
 such as `.internal` when the original has one, never a real public domain.
+`iban` keeps the country code and the spacing of the original and produces a
+valid IBAN with a different account; `phone` keeps the spacing, the country
+code, a trunk zero and the first digit of the national number, and changes the
+rest. Both are meant for `pattern` rules that match the formats you use.
 `mask` shows at most a sixth of a value at each edge (none below six
 characters).
 
