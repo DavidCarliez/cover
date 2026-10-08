@@ -273,7 +273,7 @@ func TestOverlappingKnownValuesExposeNoProtectedByte(t *testing.T) {
 	}
 }
 
-func TestOverlappingKnownValuesOfOneRuleShareOneFake(t *testing.T) {
+func TestOverlappingKnownValuesOfOneRuleBecomeOnePlaceholder(t *testing.T) {
 	r := passwordKeyRedactor()
 	mustTransform(t, r, "s", []byte(`{"password":"alpha-secret-1","x":{"password":"secret-1-beta"}}`))
 	out := mustTransform(t, r, "s", []byte(`{"messages":[{"role":"user","content":"x alpha-secret-1-beta y"}]}`))
@@ -283,7 +283,7 @@ func TestOverlappingKnownValuesOfOneRuleShareOneFake(t *testing.T) {
 	}
 	back := string(r.RestoreResponseForSession(out.Body, "application/json", "s"))
 	if !strings.Contains(back, "x alpha-secret-1-beta y") {
-		t.Fatalf("merged span did not restore: %s", back)
+		t.Fatalf("placeholder union did not restore: %s", back)
 	}
 }
 
