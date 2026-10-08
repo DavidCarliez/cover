@@ -178,8 +178,35 @@ func TestFormatGeneratorsProtectPatternRuleValuesAndRestore(t *testing.T) {
 	}
 }
 
+func TestDigitsGeneratorKeepsLayoutAndChangesEveryDigit(t *testing.T) {
+	key := []byte("test-key")
+	for _, original := range []string{"BE0123.456.749", "BE 0123 456 749", "85.07.30-033.28", "order #2024-00017", "0123456789012345678901234567890123456789"} {
+		fake, err := generateReplacement(key, "digits", original, 0)
+		if err != nil {
+			t.Fatalf("%q: %v", original, err)
+		}
+		assertSameLayout(t, original, fake, isASCIIDigit)
+		for i := 0; i < len(original); i++ {
+			if isASCIIDigit(original[i]) && original[i] == fake[i] {
+				t.Fatalf("%q: digit %d unchanged in %q", original, i, fake)
+			}
+		}
+		if again, _ := generateReplacement(key, "digits", original, 0); again != fake {
+			t.Fatalf("%q: not deterministic", original)
+		}
+		if other, _ := generateReplacement(key, "digits", original, 1); other == fake {
+			t.Fatalf("%q: attempt 1 repeats %q", original, fake)
+		}
+	}
+	for _, invalid := range []string{"", "abc", "v1.2", "BE 123"} {
+		if fake, err := generateReplacement(key, "digits", invalid, 0); err == nil {
+			t.Fatalf("%q: accepted as %q", invalid, fake)
+		}
+	}
+}
+
 func TestFormatGeneratorsAreValidRuleGenerators(t *testing.T) {
-	for _, generator := range []string{"iban", "phone"} {
+	for _, generator := range []string{"iban", "phone", "digits"} {
 		if err := ValidateAction(string(ActionPseudonymize), generator); err != nil {
 			t.Fatalf("%s: %v", generator, err)
 		}

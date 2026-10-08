@@ -169,6 +169,21 @@ func generatePhoneReplacement(original string, h [32]byte) (string, error) {
 	return fillLayout(original, digits, isASCIIDigit), nil
 }
 
+// generateDigitsReplacement keeps every non-digit byte of original and
+// changes every digit, for identifiers whose layout should survive.
+func generateDigitsReplacement(original string, h [32]byte) (string, error) {
+	digits := make([]byte, 0, len(original))
+	for i := 0; i < len(original); i++ {
+		if c := original[i]; isASCIIDigit(c) {
+			digits = append(digits, shiftDigit(c, h[len(digits)%len(h)]))
+		}
+	}
+	if len(digits) < minPhoneReplacedDigits {
+		return "", fmt.Errorf("too few digits")
+	}
+	return fillLayout(original, digits, isASCIIDigit), nil
+}
+
 // countryCodeLen returns the length of the E.164 country code that starts
 // digits: one digit for zones 1 and 7, two for the codes listed, three
 // otherwise.
