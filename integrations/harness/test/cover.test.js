@@ -79,7 +79,7 @@ test("environment routes override persisted routes", () => {
   assert.equal(state.autoFallback, false);
 });
 
-function indicatorHarness({ routes = { example: "" }, enabled = true, autoFallback = false, running = true, installed = true, model = { provider: "example", id: "test" } } = {}) {
+function indicatorHarness({ routes = { example: "" }, enabled = true, autoFallback = false, running = true, installed = true, model = { provider: "example", id: "test" }, bus } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "cover-indicator-"));
   const path = join(dir, "harness.json");
   writeFileSync(path, JSON.stringify({ routes, enabled, autoFallback }));
@@ -91,6 +91,7 @@ function indicatorHarness({ routes = { example: "" }, enabled = true, autoFallba
     unregisterProvider(name) { registered.delete(name); routeChanges += 1; },
     registerCommand(name, command) { commands.set(name, command); },
     on(name, handler) { events.set(name, handler); },
+    events: bus,
   };
   const ctx = {
     model,
@@ -216,6 +217,45 @@ test("OMP non-TUI clients retain plain status rather than unsupported component 
   harness.ctx.ui.setWidget = () => { assert.fail("RPC does not render component widgets"); };
   await harness.events.get("session_start")({}, harness.ctx);
   assert.equal(harness.indicators.at(-1), "\u{1F512}");
+});
+
+function eventBus() {
+  const listeners = new Map();
+  return {
+    on(channel, handler) {
+      if (!listeners.has(channel)) listeners.set(channel, new Set());
+      listeners.get(channel).add(handler);
+      return () => listeners.get(channel)?.delete(handler);
+    },
+    emit(channel, data) {
+      for (const handler of listeners.get(channel) || []) handler(data);
+    },
+  };
+}
+
+test("other plugins' items share the lock line while Cover announces itself as its host", async () => {
+  const bus = eventBus();
+  const hosts = [];
+  bus.on("indicator-line:host", (host) => hosts.push(host));
+  const harness = indicatorHarness({ bus });
+  let widget;
+  harness.ctx.mode = "tui";
+  harness.ctx.models = { current: () => harness.ctx.model };
+  harness.ctx.ui.setWidget = (_name, factory) => { widget = factory?.(); };
+  assert.equal(hosts.length, 1);
+  assert.equal(hosts[0].active, true);
+  bus.emit("indicator-line:query");
+  assert.deepEqual(hosts[1], hosts[0], "a plugin loaded later must learn about the host");
+
+  await harness.events.get("session_start")({}, harness.ctx);
+  assert.deepEqual(widget.render(80), ["\u{1F512}"]);
+  bus.emit("indicator-line:item", { key: "fastcel", text: "baseten · 220 tok/s" });
+  assert.deepEqual(widget.render(80), ["\u{1F512}  baseten · 220 tok/s"]);
+  bus.emit("indicator-line:item", { key: "fastcel", text: undefined });
+  assert.deepEqual(widget.render(80), ["\u{1F512}"]);
+
+  await harness.events.get("session_shutdown")({}, harness.ctx);
+  assert.deepEqual(hosts.at(-1), { id: hosts[0].id, active: false });
 });
 
 test("opt-in fallback switches new turns directly and restores protection on recovery", async () => {

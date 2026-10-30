@@ -220,19 +220,38 @@ export function createCoverExtension(pi, options = {}) {
     if (!registered.has(model.provider)) return "unconfigured";
     return status.running ? "protected" : "blocked";
   };
+  // Other plugins can show a short item on the lock line (fastcel shows its provider pick there). Cover
+  // announces itself on `indicator-line:host`, again whenever asked on `indicator-line:query`, and draws
+  // each `{ key, text }` posted on `indicator-line:item` after the lock; an empty text removes the item.
+  const lineHostId = `cover:${crypto.randomUUID()}`;
+  const lineItems = new Map();
+  let lineCtx;
+  const indicatorLine = (icon) => [icon, ...lineItems.values()].join("  ");
   const updateIndicator = (ctx, model) => {
+    lineCtx = ctx;
     if (ctx?.mode === "tui" && typeof ctx?.models?.current === "function" && typeof ctx?.ui?.setWidget === "function") {
       // OMP redraws on role/model changes but does not emit Pi's model_select.
       // Read its live model during rendering instead of caching a stale icon.
       ctx.ui.setStatus?.(STATUS_KEY, undefined);
       ctx.ui.setWidget(STATUS_KEY, () => ({
-        render: () => [indicatorIcon(coverage(ctx))],
+        render: () => [indicatorLine(indicatorIcon(coverage(ctx)))],
         invalidate() {},
       }), { placement: "belowEditor" });
       return;
     }
-    ctx?.ui?.setStatus?.(STATUS_KEY, indicatorIcon(coverage(ctx, model)));
+    ctx?.ui?.setStatus?.(STATUS_KEY, indicatorLine(indicatorIcon(coverage(ctx, model))));
   };
+  const announceLine = (active) => pi.events?.emit?.("indicator-line:host", { id: lineHostId, active });
+  pi.events?.on?.("indicator-line:query", () => announceLine(true));
+  pi.events?.on?.("indicator-line:item", (item) => {
+    if (!item || typeof item.key !== "string") return;
+    const text = typeof item.text === "string" && item.text ? item.text : undefined;
+    if (lineItems.get(item.key) === text) return;
+    if (text) lineItems.set(item.key, text);
+    else lineItems.delete(item.key);
+    if (lineCtx) updateIndicator(lineCtx);
+  });
+  announceLine(true);
   const describeCoverage = (ctx) => {
     const provider = currentModel(ctx)?.provider || "none";
     switch (coverage(ctx)) {
@@ -280,6 +299,7 @@ export function createCoverExtension(pi, options = {}) {
   pi.on("before_agent_start", async (_event, ctx) => { await reconcile(ctx); });
   pi.on("model_select", (event, ctx) => { updateIndicator(ctx, event.model); });
   pi.on("session_shutdown", (_event, ctx) => {
+    announceLine(false);
     ctx?.ui?.setWidget?.(STATUS_KEY, undefined);
     ctx?.ui?.setStatus?.(STATUS_KEY, undefined);
   });

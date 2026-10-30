@@ -53,6 +53,10 @@ and when the active model changes. Pi uses its model-selection event; OMP's
 below-editor widget reads the live model whenever the TUI redraws, including
 role switches. No polling or provider-route changes are needed to refresh it.
 Notifications and `/cover status` retain coverage and daemon details.
+Other plugins can put a short item after the lock, as
+[fastcel](https://github.com/DavidCarliez/fastcel) does with its provider pick:
+Cover announces itself on the `indicator-line:host` event-bus channel and draws
+each `{ key, text }` posted on `indicator-line:item`.
 When Cover returns, protection resumes on the next user turn. `/cover fallback
 off` restores the default fail-closed mode. Existing requests and tool
 continuations are not replayed directly on failure. The provider's original
